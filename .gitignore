@@ -1,6 +1,0 @@
-env/
-*.pyc
-__pycache__/
-.env
-*.log
-*.sqlite3
