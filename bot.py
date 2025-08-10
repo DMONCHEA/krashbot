@@ -1145,7 +1145,6 @@ def main():
         handlers = BotHandlers()
         
         # Регистрация обработчиков команд
-        application.add_handler(CommandHandler("start", handlers.start))
         application.add_handler(CommandHandler("info", handlers.check_client_info))
         application.add_handler(CommandHandler("stats", handlers.admin_stats))
         application.add_handler(CommandHandler("add_admin", handlers.add_admin))
@@ -1171,6 +1170,7 @@ def main():
                 REGISTER_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_contact)],
             },
             fallbacks=[CommandHandler("cancel", handlers.cancel_registration)],
+            allow_reentry=True  # Позволяет начать регистрацию заново
         )
         application.add_handler(conv_handler)
         
