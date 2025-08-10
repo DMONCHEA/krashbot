@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-SECOND_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", 0))
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_CHAT_ID", "").split(",") if id.strip() and id.strip().isdigit()]
 MAX_ORDER_CANCEL_HOURS = 6
 
 # Состояния для ConversationHandler
@@ -109,7 +109,7 @@ class DatabaseManager:
                 raise ValueError("DATABASE_URL environment variable is not set")
                 
             result = urlparse(db_url)
-            self.conn = psycopg2.connect(
+            conn = psycopg2.connect(
                 dbname=result.path[1:],
                 user=result.username,
                 password=result.password,
@@ -118,7 +118,7 @@ class DatabaseManager:
                 sslmode="require"
             )
             logger.info("Connected to PostgreSQL database")
-            return self.conn
+            return conn
         except Exception as e:
             logger.error(f"Database connection error: {e}")
             raise
@@ -406,6 +406,7 @@ class BotHandlers:
                         InlineKeyboardButton("Открыть меню", switch_inline_query_current_chat="")
                     ]])
                 )
+                return ConversationHandler.END
             else:
                 await update.message.reply_text(
                     "Добро пожаловать! Для начала работы необходимо зарегистрироваться.\n"
@@ -549,7 +550,11 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
-        await update.message.delete()
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {e}")
+
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
         
@@ -573,6 +578,10 @@ class BotHandlers:
     async def show_cart(self, update: Update, user_id: int, edit_message: bool = False):
         """Показывает корзину пользователя"""
         if not self.user_carts.get(user_id, {}).get("items"):
+            if edit_message:
+                await update.callback_query.edit_message_text(text="Ваша корзина пуста!")
+            else:
+                await update.message.reply_text("Ваша корзина пуста!")
             return
         
         cart = self.user_carts[user_id]["items"]
@@ -679,6 +688,10 @@ class BotHandlers:
         
         # Формирование информации о заказе
         cart = self.user_carts[user_id]["items"]
+        if not cart:
+            await query.edit_message_text("Ваша корзина пуста!")
+            return
+            
         order_lines = []
         
         for item in cart:
@@ -708,12 +721,19 @@ class BotHandlers:
             "username": user.username
         }
         
-        order_id = self.db.save_order(
-            user_id=user_id,
-            order_data=order_data,
-            delivery_date=date_str,
-            delivery_time=time_str
-        )
+        try:
+            order_id = self.db.save_order(
+                user_id=user_id,
+                order_data=order_data,
+                delivery_date=date_str,
+                delivery_time=time_str
+            )
+        except Exception as e:
+            logger.error(f"Error saving order: {e}")
+            await query.edit_message_text(
+                "Произошла ошибка при сохранении заказа. Пожалуйста, попробуйте позже."
+            )
+            return
         
         # Сохраняем заказ для возможной отмены
         self.last_orders[user_id] = {
@@ -752,7 +772,7 @@ class BotHandlers:
         try:
             kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
             sent_message = await context.bot.send_message(
-                chat_id=SECOND_CHAT_ID,
+                chat_id=ADMIN_IDS[0],  # Отправляем только первому администратору
                 text=admin_message,
                 reply_markup=InlineKeyboardMarkup(kb) if kb else None,
                 disable_notification=True
@@ -800,315 +820,259 @@ class BotHandlers:
             await query.edit_message_text(text="Не удалось отменить заказ. Пожалуйста, свяжитесь с менеджером.")
             return
         
-        # Уведомляем группу об отмене заказа
-        try:
-            admin_message = (
-                f"=== ЗАКАЗ ОТМЕНЕН ===\n\n"
-                f"👤 Клиент: {query.from_user.full_name}\n"
-                f"📱 Телеграм: @{query.from_user.username if query.from_user.username else 'не указан'}\n"
-                f"🆔 Номер заказа: {order_data['order_id']}\n\n"
-                f"Заказ отменен пользователем."
-            )
-            
-            await context.bot.send_message(
-                chat_id=SECOND_CHAT_ID,
-                text=admin_message,
-                reply_to_message_id=order_data.get("admin_message_id"),
-                disable_notification=True
-            )
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления об отмене: {e}")
-        
-        # Удаляем заказ из истории
-        del self.last_orders[user_id]
-        
-        # Убираем первую строку из оригинального сообщения
-        order_text = "\n".join(order_data["order_text"].split("\n")[1:])
-        
-        await query.edit_message_text(
-            text="❌ Ваш заказ был отменен.\n\n" + order_text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 Сделать новый заказ", switch_inline_query_current_chat="")]
-            ])
-        )
+        # Уведомляем администратора об отмене
+        if "admin_message_id" in order_data:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_IDS[0],
+                    text=f"⚠️ ЗАКАЗ ОТМЕНЕН ⚠️\n\n"
+                         f"Заказ №{order_data['order_id']} был отменен клиентом.\n"
+                         f"Оригинальное сообщение:\n\n{order_data['order_text']}",
+                    reply_to_message_id=order_data["admin_message_id"]
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления об отмене: {e}")
 
-    async def handle_quantity_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок выбора количества и навигации"""
+        # Обновляем сообщение для пользователя
+        await query.edit_message_text(
+            text="❌ Ваш заказ был отменен.\n\n" + order_data["order_text"],
+            reply_markup=None
+        )
+        
+        # Удаляем информацию о заказе
+        del self.last_orders[user_id]
+
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик callback запросов"""
         query = update.callback_query
         await query.answer()
+        
         user_id = query.from_user.id
         data = query.data
         
-        if data == "cancel_last_order":
-            await self.cancel_last_order(update, context)
-            return
+        try:
+            # Обработка навигации по товарам в корзине
+            if data == "prev_item":
+                if user_id in self.current_editing:
+                    cart = self.user_carts.get(user_id, {}).get("items", [])
+                    if cart:
+                        self.current_editing[user_id] = (self.current_editing[user_id] - 1) % len(cart)
+                        await self.show_cart(update, user_id, edit_message=True)
             
-        if not self.user_carts.get(user_id, {}).get("items"):
-            await query.edit_message_text(text="Ваша корзина пуста!")
-            return
-        
-        if data == "select_delivery_date":
-            await self.show_delivery_dates(update, user_id)
-            return
+            elif data == "next_item":
+                if user_id in self.current_editing:
+                    cart = self.user_carts.get(user_id, {}).get("items", [])
+                    if cart:
+                        self.current_editing[user_id] = (self.current_editing[user_id] + 1) % len(cart)
+                        await self.show_cart(update, user_id, edit_message=True)
             
-        elif data.startswith("delivery_date_"):
-            self.selected_dates[user_id] = data.split("_", 2)[-1]
-            await self.show_delivery_times(update, user_id)
-            return
+            # Обработка изменения количества товара
+            elif data == "increase":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        self.user_carts[user_id]["items"][idx]["quantity"] += 1
+                        await self.show_cart(update, user_id, edit_message=True)
             
-        elif data.startswith("delivery_time_"):
-            await self.process_delivery_time(update, context)
-            return
+            elif data == "decrease":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        if self.user_carts[user_id]["items"][idx]["quantity"] > 1:
+                            self.user_carts[user_id]["items"][idx]["quantity"] -= 1
+                            await self.show_cart(update, user_id, edit_message=True)
             
-        elif data == "back_to_cart":
-            await self.show_cart(update, user_id,)
-            return
+            # Удаление товара из корзины
+            elif data == "remove_item":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        del self.user_carts[user_id]["items"][idx]
+                        
+                        # Обновляем индекс редактирования
+                        if self.user_carts[user_id]["items"]:
+                            self.current_editing[user_id] = min(idx, len(self.user_carts[user_id]["items"]) - 1)
+                        else:
+                            del self.current_editing[user_id]
+                        
+                        await self.show_cart(update, user_id, edit_message=True)
             
-        elif data == "back_to_dates":
-            await self.show_delivery_dates(update, user_id)
-            return
+            # Выбор даты доставки
+            elif data == "select_delivery_date":
+                await self.show_delivery_dates(update, user_id)
             
-        cart = self.user_carts[user_id]["items"]
-        editing_index = self.current_editing.get(user_id, 0)
-        
-        if data == "prev_item":
-            new_index = max(0, editing_index - 1)
-            self.current_editing[user_id] = new_index
-            await self.show_cart(update, user_id, edit_message=True)
-            
-        elif data == "next_item":
-            new_index = min(len(cart) - 1, editing_index + 1)
-            self.current_editing[user_id] = new_index
-            await self.show_cart(update, user_id, edit_message=True)
-            
-        elif data == "increase":
-            cart[editing_index]["quantity"] += 1
-            await self.show_cart(update, user_id, edit_message=True)
-            
-        elif data == "decrease":
-            if cart[editing_index]["quantity"] > 1:
-                cart[editing_index]["quantity"] -= 1
+            # Возврат в корзину
+            elif data == "back_to_cart":
                 await self.show_cart(update, user_id, edit_message=True)
-                
-        elif data == "remove_item":
-            cart.pop(editing_index)
-            if editing_index >= len(cart) and len(cart) > 0:
-                self.current_editing[user_id] = len(cart) - 1
-                
-            if len(cart) == 0:
-                await query.edit_message_text(text="Ваша корзина пуста!")
-                del self.user_carts[user_id]
-            else:
-                await self.show_cart(update, user_id, edit_message=True)
+            
+            # Возврат к выбору даты
+            elif data == "back_to_dates":
+                await self.show_delivery_dates(update, user_id)
+            
+            # Обработка выбора даты доставки
+            elif data.startswith("delivery_date_"):
+                date_str = data.split("_", 2)[-1]
+                self.selected_dates[user_id] = date_str
+                await self.show_delivery_times(update, user_id)
+            
+            # Обработка выбора времени доставки
+            elif data.startswith("delivery_time_"):
+                await self.process_delivery_time(update, context)
+            
+            # Отмена последнего заказа
+            elif data == "cancel_last_order":
+                await self.cancel_last_order(update, context)
+            
+            # Просмотр активных заказов
+            elif data == "my_orders":
+                await self.show_active_orders(update, user_id)
+            
+            # Открытие каталога
+            elif data == "catalog":
+                await query.edit_message_text(
+                    text="Меню товаров:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                        "Открыть меню", switch_inline_query_current_chat=""
+                    )]])
+                )
+            
+            # Информация о боте
+            elif data == "about":
+                await query.edit_message_text(
+                    text="ℹ️ О нас:\n\nМы доставляем свежие круассаны и выпечку каждое утро!\n\n"
+                         "Работаем с 6:00 до 13:00\n"
+                         "По вопросам сотрудничества: @Krash_order_Bot",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]])
+                )
+            
+            # Возврат в главное меню
+            elif data == "back_to_menu":
+                await self._show_main_menu(update)
+        
+        except Exception as e:
+            logger.error(f"Error in callback handler: {e}")
+            await query.edit_message_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
 
-    async def show_my_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def show_active_orders(self, update: Update, user_id: int):
         """Показывает активные заказы пользователя"""
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
+        order = self.db.get_active_order(user_id)
         
-        active_order = self.db.get_active_order(user_id)
-        if not active_order:
-            await query.edit_message_text(
+        if not order:
+            await update.callback_query.edit_message_text(
                 text="У вас нет активных заказов.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛒 Сделать заказ", switch_inline_query_current_chat="")]
-                ])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]])
             )
             return
-            
-        # Формируем текст заказа
-        order_lines = []
-        for item in active_order['order_data']['items']:
-            p = item['product']
-            qty = item['quantity']
-            order_lines.append(f"▪️ {p['title']} - {qty} шт.")
-            
-        order_text = (
-            f"📦 Ваш активный заказ:\n\n" +
-            "\n".join(order_lines) + "\n\n" +
-            f"📅 Дата доставки: {active_order['delivery_date']}\n" +
-            f"🕒 Время доставки: {active_order['delivery_time']}\n"
-        )
         
-        # Проверяем, можно ли еще отменить заказ
-        delivery_date = datetime.strptime(active_order['delivery_date'], "%Y-%m-%d")
-        delivery_time = active_order['delivery_time'].split(" - ")[0]
-        delivery_datetime = datetime.strptime(f"{active_order['delivery_date']} {delivery_time}", "%Y-%m-%d %H:%M")
-        time_left = delivery_datetime - datetime.now()
+        order_lines = []
+        for item in order["order_data"]["items"]:
+            p = item["product"]
+            qty = item["quantity"]
+            order_lines.append(f"▪️ {p['title']} - {qty} шт.")
+        
+        order_text = (
+            "📦 Ваш активный заказ:\n\n" +
+            "\n".join(order_lines) +
+            f"\n\n📅 Дата доставки: {order['delivery_date']}" +
+            f"\n🕒 Время доставки: {order['delivery_time']}"
+        )
         
         keyboard = []
+        delivery_datetime = datetime.strptime(
+            f"{order['delivery_date']} {order['delivery_time'].split(' - ')[0]}",
+            "%Y-%m-%d %H:%M"
+        )
+        time_left = delivery_datetime - datetime.now()
+        
         if time_left > timedelta(hours=6):
-            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_order_{active_order['order_id']}")])
-        keyboard.append([InlineKeyboardButton("👨‍💼 Связаться с менеджером", url="https://t.me/Krash_order_Bot")])
+            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_order_{order['order_id']}")])
         
-        await query.edit_message_text(
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")])
+        
+        await update.callback_query.edit_message_text(
             text=order_text,
-            reply_markup=InlineKeyboardMarkup(keyboard))
-            
-    async def cancel_order_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает отмену заказа из меню 'Мои заказы'"""
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
-        order_id = int(query.data.split("_")[-1])
-        
-        # Отменяем заказ в базе данных
-        if not self.db.cancel_order(order_id):
-            await query.edit_message_text(text="Не удалось отменить заказ. Пожалуйста, свяжитесь с менеджером.")
-            return
-            
-        # Уведомляем группу об отмене заказа
-        try:
-            admin_message = (
-                f"=== ЗАКАЗ ОТМЕНЕН ===\n\n"
-                f"👤 Клиент: {query.from_user.full_name}\n"
-                f"📱 Телеграм: @{query.from_user.username if query.from_user.username else 'не указан'}\n"
-                f"🆔 Номер заказа: {order_id}\n\n"
-                f"Заказ отменен пользователем."
-            )
-            
-            await context.bot.send_message(
-                chat_id=SECOND_CHAT_ID,
-                text=admin_message,
-                disable_notification=True
-            )
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления об отмене: {e}")
-            
-        await query.edit_message_text(
-            text="❌ Ваш заказ был отменен.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 Сделать новый заказ", switch_inline_query_current_chat="")]
-            ])
-        )
-
-    async def show_about(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает информацию о компании"""
-        query = update.callback_query
-        await query.answer()
-        
-        about_text = (
-            "🏢 О компании Krash:\n\n"
-            "Мы производим свежую и вкусную выпечку каждый день!\n\n"
-            "📍 Наш адрес: г. Москва, ул. Примерная, 123\n"
-            "📞 Телефон: +7 (123) 456-78-90\n"
-            "🕒 Часы работы: 6:00 - 18:00\n\n"
-            "Для связи с менеджером: @Krash_order_Bot"
-        )
-        
-        await query.edit_message_text(
-            text=about_text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]
-            ])
-        )
-
-    async def back_to_main(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Возвращает в главное меню"""
-        query = update.callback_query
-        await query.answer()
-        
-        keyboard = [
-            [InlineKeyboardButton("🛒 Каталог", callback_data="catalog")],
-            [InlineKeyboardButton("📦 Мои заказы", callback_data="my_orders")],
-            [InlineKeyboardButton("ℹ️ О нас", callback_data="about")],
-        ]
-        
-        await query.edit_message_text(
-            text="🏠 Главное меню",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    async def generate_monthly_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Генерирует месячный отчет по заказам (только для админов)"""
+    async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отправляет администратору статистику заказов"""
         if not self.db.is_admin(update.message.from_user.id):
             await update.message.reply_text("Эта команда доступна только администраторам.")
             return
-
-            
+        
         try:
-            # Получаем даты начала и конца месяца
+            # Получаем статистику за текущий месяц
             today = datetime.now()
             first_day = today.replace(day=1)
             last_day = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
             
-            # Получаем статистику из базы данных
             stats = self.db.get_monthly_croissant_stats(
                 first_day.strftime("%Y-%m-%d"),
                 last_day.strftime("%Y-%m-%d")
             )
             
             if not stats:
-                await update.message.reply_text("Нет данных для отчета за текущий месяц.")
+                await update.message.reply_text("Нет данных о заказах за текущий месяц.")
                 return
-                
-            # Создаем CSV файл
+            
+            # Формируем CSV файл
             output = io.StringIO()
             writer = csv.DictWriter(output, fieldnames=stats[0].keys())
             writer.writeheader()
             writer.writerows(stats)
             
-            # Отправляем файл
             output.seek(0)
             await update.message.reply_document(
-                document=InputFile(io.BytesIO(output.getvalue().encode()), filename="monthly_report.csv"),
-                caption=f"Отчет за период с {first_day.strftime('%d.%m.%Y')} по {last_day.strftime('%d.%m.%Y')}"
+                document=InputFile(io.BytesIO(output.getvalue().encode()), filename="stats.csv"),
+                caption=f"Статистика заказов с {first_day.strftime('%d.%m.%Y')} по {last_day.strftime('%d.%m.%Y')}"
             )
         except Exception as e:
-            logger.error(f"Error generating monthly report: {e}")
-            await update.message.reply_text("Произошла ошибка при генерации отчета.")
-    
-    async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавляет администратора (только для владельца)"""
-        user = update.message.from_user
-        if user.id != SECOND_CHAT_ID:  # SECOND_CHAT_ID - это ID главного администратора
-            await update.message.reply_text("Эта команда доступна только владельцу бота.")
-            return
+            logger.error(f"Error generating stats: {e}")
+            await update.message.reply_text("Произошла ошибка при формировании статистики.")
 
+    async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Добавляет администратора"""
+        user = update.message.from_user
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+            return
+            
+        if not context.args:
+            await update.message.reply_text("Использование: /add_admin <user_id>")
+            return
+            
         try:
-            target_user = update.message.reply_to_message.from_user
-            if self.db.add_admin(target_user.id, target_user.username):
-                await update.message.reply_text(f"Пользователь @{target_user.username} добавлен в администраторы.")
+            new_admin_id = int(context.args[0])
+            if self.db.add_admin(new_admin_id):
+                await update.message.reply_text(f"Пользователь {new_admin_id} добавлен как администратор.")
             else:
-                await update.message.reply_text("Не удалось добавить администратора или он уже был добавлен.")
-        except Exception as e:
-            logger.error(f"Error in add_admin: {e}")
-            await update.message.reply_text("Ошибка при добавлении администратора.")
+                await update.message.reply_text(f"Пользователь {new_admin_id} уже является администратором.")
+        except ValueError:
+            await update.message.reply_text("Некорректный ID пользователя.")
 
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Удаляет администратора (только для владельца)"""
+        """Удаляет администратора"""
         user = update.message.from_user
-        if user.id != SECOND_CHAT_ID:
-            await update.message.reply_text("Эта команда доступна только владельцу бота.")
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("У вас нет прав для выполнения этой команды.")
             return
-
+            
+        if not context.args:
+            await update.message.reply_text("Использование: /remove_admin <user_id>")
+            return
+            
         try:
-            target_user = update.message.reply_to_message.from_user
-            if self.db.remove_admin(target_user.id):
-                await update.message.reply_text(f"Пользователь @{target_user.username} удален из администраторов.")
-            else:
-                await update.message.reply_text("Не удалось удалить администратора или он не был найден.")
-        except Exception as e:
-            logger.error(f"Error in remove_admin: {e}")
-            await update.message.reply_text("Ошибка при удалении администратора.")
-
-    async def list_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает список администраторов"""
-        try:
-            with self.db.conn.cursor() as cursor:
-                cursor.execute('SELECT user_id, username FROM admins ORDER BY added_at')
-                admins = cursor.fetchall()
-
-            if not admins:
-                await update.message.reply_text("Нет администраторов.")
+            admin_id = int(context.args[0])
+            if user.id == admin_id:
+                await update.message.reply_text("Вы не можете удалить сами себя.")
                 return
-
-            admin_list = "\n".join([f"@{admin[1] or 'unknown'} (ID: {admin[0]})" for admin in admins])
-            await update.message.reply_text(f"Список администраторов:\n\n{admin_list}")
-        except Exception as e:
-            logger.error(f"Error in list_admins: {e}")
-            await update.message.reply_text("Ошибка при получении списка администраторов.")        
+                
+            if self.db.remove_admin(admin_id):
+                await update.message.reply_text(f"Пользователь {admin_id} удален из администраторов.")
+            else:
+                await update.message.reply_text(f"Пользователь {admin_id} не является администратором.")
+        except ValueError:
+            await update.message.reply_text("Некорректный ID пользователя.")
 
 def main():
     """Запуск бота"""
@@ -1116,43 +1080,26 @@ def main():
         # Инициализация бота
         application = ApplicationBuilder().token(TOKEN).build()
         handlers = BotHandlers()
-
+        
         # Регистрация обработчиков команд
         application.add_handler(CommandHandler("start", handlers.start))
         application.add_handler(CommandHandler("info", handlers.check_client_info))
-        application.add_handler(CommandHandler("report", handlers.generate_monthly_report))
+        application.add_handler(CommandHandler("stats", handlers.admin_stats))
+        application.add_handler(CommandHandler("add_admin", handlers.add_admin))
+        application.add_handler(CommandHandler("remove_admin", handlers.remove_admin))
         
-        # Регистрация обработчиков сообщений
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            handlers.handle_product_message))
-            
-        # Регистрация inline обработчиков
+        # Регистрация обработчика inline запросов
         application.add_handler(InlineQueryHandler(handlers.inline_query))
         
-        # Регистрация обработчиков команд для администрирования
-        application.add_handler(CommandHandler("addadmin", handlers.add_admin))
-        application.add_handler(CommandHandler("removeadmin", handlers.remove_admin))
-        application.add_handler(CommandHandler("listadmins", handlers.list_admins))
-
-        # Регистрация обработчиков кнопок
-        application.add_handler(CallbackQueryHandler(
-            handlers.handle_quantity_buttons,
-            pattern="^(prev_item|next_item|increase|decrease|remove_item|select_delivery_date|delivery_date_.*|delivery_time_.*|back_to_cart|back_to_dates|cancel_last_order|cancel_order_.*)$"))
-            
-        application.add_handler(CallbackQueryHandler(
-            handlers.show_my_orders,
-            pattern="^my_orders$"))
-            
-        application.add_handler(CallbackQueryHandler(
-            handlers.show_about,
-            pattern="^about$"))
-            
-        application.add_handler(CallbackQueryHandler(
-            handlers.back_to_main,
-            pattern="^back_to_main$"))
-            
-        # Регистрация ConversationHandler для регистрации
+        # Регистрация обработчика сообщений с товарами
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, handlers.handle_product_message
+        ))
+        
+        # Регистрация обработчика callback запросов
+        application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
+        
+        # Регистрация обработчика регистрации
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
             states={
@@ -1164,11 +1111,11 @@ def main():
         application.add_handler(conv_handler)
         
         # Запуск бота
-        logger.info("Bot is starting...")
+        logger.info("Бот запущен")
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Error in main: {e}")
+        logger.error(f"Ошибка при запуске бота: {e}")
     finally:
         if hasattr(handlers, 'db'):
             handlers.db.close()
