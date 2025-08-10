@@ -389,6 +389,19 @@ class BotHandlers:
         self.last_orders = {}  # Последние заказы пользователей
         self.db = DatabaseManager()
 
+    async def handle_registration_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик сообщений во время регистрации"""
+        user_id = update.message.from_user.id
+        current_state = await context.application.persistence.get_conversation(user_id)
+    
+        if current_state == REGISTER_ORG:
+            await self.register_org(update, context)
+        elif current_state == REGISTER_CONTACT:
+            await self.register_contact(update, context)
+        else:
+            # Если не в процессе регистрации, но сообщение похоже на регистрационное
+            await update.message.reply_text("Для регистрации используйте команду /start")
+
     async def _show_main_menu(self, update: Update):
         """Показывает главное меню"""
         keyboard = [
@@ -1138,7 +1151,14 @@ def main():
         
         # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, handlers.handle_product_message
+        filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^(?i)(регистрация|организация|контакт)'), 
+        handlers.handle_product_message
+        ))
+
+        # Новый обработчик для регистрационных сообщени
+        application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(?i)(регистрация|организация|контакт)'), 
+        handlers.handle_registration_messages
         ))
         
         # Регистрация обработчика callback запросов
