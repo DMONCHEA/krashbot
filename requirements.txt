@@ -1,5 +1,0 @@
-python-telegram-bot==20.3
-psycopg2-binary==2.9.9
-python-dotenv==1.0.0
-sqlalchemy==2.0.23
-python-telegram-bot[persistence]>=20.0
