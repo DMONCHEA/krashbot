@@ -1101,8 +1101,8 @@ def main():
     """Запуск бота"""
     try:
         # Инициализация бота с PicklePersistence
-        persistence = PicklePersistence(filepath="bot_persistence.pkl")
-        application = ApplicationBuilder().token(TOKEN).persistence(persistence).build()
+        # persistence = PicklePersistence(filepath="bot_persistence.pkl")
+        application = ApplicationBuilder().token(TOKEN).build()
         handlers = BotHandlers()
         
         # Регистрация обработчиков команд
@@ -1126,7 +1126,7 @@ def main():
                 REGISTER_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_contact)],
             },
             fallbacks=[CommandHandler("cancel", handlers.cancel_registration)],
-            persistent=True,
+            persistent=False,
             name="registration_conversation"
         )
         application.add_handler(conv_handler)
