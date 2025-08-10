@@ -465,11 +465,36 @@ async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def main():
     """Запуск бота"""
+    # Проверка обязательных переменных окружения перед запуском
+    required_env_vars = ['TELEGRAM_BOT_TOKEN', 'DATABASE_URL']
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        error_msg = f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}"
+        logger.critical(error_msg)
+        raise EnvironmentError(error_msg)
+
+    handlers = None  # Инициализируем переменную заранее
+    
     try:
-        handlers = BotHandlers()
+        # Логируем информацию о подключении к БД (для диагностики)
+        db_url = os.getenv('DATABASE_URL')
+        logger.info(f"Подключаемся к БД: {db_url[:20]}...")  # Логируем только начало URL для безопасности
+        
+        handlers = BotHandlers()  # Инициализация после проверки переменных
         
         app = ApplicationBuilder().token(TOKEN).build()
         
+        # Проверка соединения с БД
+        try:
+            with handlers.db.conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                logger.info("Проверка соединения с БД: успешно")
+        except Exception as db_error:
+            logger.critical(f"Ошибка подключения к БД: {db_error}")
+            raise
+
+        # Настройка обработчиков
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', handlers.start)],
             states={
@@ -486,99 +511,45 @@ def main():
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_product_message))
         app.add_handler(CallbackQueryHandler(handlers.handle_quantity_buttons))
         
-        logger.info("Bot is starting...")
+        logger.info("Бот запускается...")
         
+        # Запуск бота
         if os.getenv("RAILWAY_ENVIRONMENT"):
             PORT = int(os.getenv("PORT", 8000))
-            app.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=TOKEN,
-                webhook_url=f"{os.getenv('RAILWAY_STATIC_URL')}/{TOKEN}"
-            )
+            webhook_url = os.getenv('RAILWAY_STATIC_URL')
+            
+            if not webhook_url:
+                logger.warning("RAILWAY_STATIC_URL не установлен, используем polling")
+                app.run_polling()
+            else:
+                logger.info(f"Запуск в webhook режиме на порту {PORT}")
+                app.run_webhook(
+                    listen="0.0.0.0",
+                    port=PORT,
+                    url_path=TOKEN,
+                    webhook_url=f"{webhook_url}/{TOKEN}"
+                )
         else:
+            logger.info("Запуск в polling режиме")
             app.run_polling()
             
+    except psycopg2.OperationalError as db_error:
+        logger.critical(f"Критическая ошибка БД: {db_error}")
     except Exception as e:
-        logger.critical(f"Bot crashed: {e}")
+        logger.critical(f"Бот аварийно завершил работу: {str(e)}", exc_info=True)
     finally:
-        if hasattr(handlers, 'db'):
-            handlers.db.close()
-        logger.info("Bot stopped")
+        try:
+            if handlers is not None and hasattr(handlers, 'db'):
+                handlers.db.close()
+                logger.info("Соединение с БД закрыто")
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии соединения: {e}")
+        
+        logger.info("Бот остановлен")
 
 if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # Дополнительная проверка для Railway
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        logger.info("Запуск в окружении Railway")
     
+    main()
