@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_CHAT_ID", "").split(",") if id.strip()]
+SECOND_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", 0))
 MAX_ORDER_CANCEL_HOURS = 6
 
 # Состояния для ConversationHandler
@@ -1062,7 +1062,7 @@ class BotHandlers:
     async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Добавляет администратора (только для владельца)"""
         user = update.message.from_user
-        if user.id not in ADMIN_IDS:  # SECOND_CHAT_ID - это ID главного администратора
+        if user.id != SECOND_CHAT_ID:  # SECOND_CHAT_ID - это ID главного администратора
             await update.message.reply_text("Эта команда доступна только владельцу бота.")
             return
 
@@ -1079,7 +1079,7 @@ class BotHandlers:
     async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Удаляет администратора (только для владельца)"""
         user = update.message.from_user
-        if user.id not in ADMIN_IDS:
+        if user.id != SECOND_CHAT_ID:
             await update.message.reply_text("Эта команда доступна только владельцу бота.")
             return
 
