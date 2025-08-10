@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_CHAT_ID", "").split(",") if id.strip() and id.strip().isdigit()]
+ADMIN_IDS = os.getenv("ADMIN_CHAT_ID")
 MAX_ORDER_CANCEL_HOURS = 6
 
 # Добавим логирование для проверки ADMIN_IDS
