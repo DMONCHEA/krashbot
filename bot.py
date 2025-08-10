@@ -1151,14 +1151,14 @@ def main():
         
         # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^(?i)(регистрация|организация|контакт)'), 
-        handlers.handle_product_message
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
+            handlers.handle_product_message
         ))
 
-        # Новый обработчик для регистрационных сообщени
+        # Новый обработчик для регистрационных сообщений
         application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(?i)(регистрация|организация|контакт)'), 
-        handlers.handle_registration_messages
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
+            handlers.handle_registration_messages
         ))
         
         # Регистрация обработчика callback запросов
