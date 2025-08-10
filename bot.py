@@ -158,6 +158,15 @@ class DatabaseManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+
+                # Таблица администраторов
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS admins (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
                 
                 self.conn.commit()
                 logger.info("Database tables initialized successfully")
@@ -322,6 +331,44 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting monthly stats: {e}")
             return []
+        
+    def add_admin(self, user_id: int, username: str = None) -> bool:
+        """Добавляет администратора"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute('''
+                INSERT INTO admins (user_id, username)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO NOTHING
+            ''', (user_id, username))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error adding admin {user_id}: {e}")
+            return False
+
+    def remove_admin(self, user_id: int) -> bool:
+        """Удаляет администратора"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute('DELETE FROM admins WHERE user_id = %s', (user_id,))
+                self.conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error removing admin {user_id}: {e}")
+            return False
+
+    def is_admin(self, user_id: int) -> bool:
+        """Проверяет, является ли пользователь администратором"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute('SELECT 1 FROM admins WHERE user_id = %s', (user_id,))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking admin {user_id}: {e}")
+            return False
 
 class BotHandlers:
     """Класс для обработчиков бота"""
@@ -975,9 +1022,10 @@ class BotHandlers:
 
     async def generate_monthly_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Генерирует месячный отчет по заказам (только для админов)"""
-        if update.message.from_user.id != SECOND_CHAT_ID:
+        if not self.db.is_admin(update.message.from_user.id):
             await update.message.reply_text("Эта команда доступна только администраторам.")
             return
+
             
         try:
             # Получаем даты начала и конца месяца
@@ -1010,6 +1058,57 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Error generating monthly report: {e}")
             await update.message.reply_text("Произошла ошибка при генерации отчета.")
+    
+    async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Добавляет администратора (только для владельца)"""
+        user = update.message.from_user
+        if user.id != SECOND_CHAT_ID:  # SECOND_CHAT_ID - это ID главного администратора
+            await update.message.reply_text("Эта команда доступна только владельцу бота.")
+            return
+
+        try:
+            target_user = update.message.reply_to_message.from_user
+            if self.db.add_admin(target_user.id, target_user.username):
+                await update.message.reply_text(f"Пользователь @{target_user.username} добавлен в администраторы.")
+            else:
+                await update.message.reply_text("Не удалось добавить администратора или он уже был добавлен.")
+        except Exception as e:
+            logger.error(f"Error in add_admin: {e}")
+            await update.message.reply_text("Ошибка при добавлении администратора.")
+
+    async def remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаляет администратора (только для владельца)"""
+        user = update.message.from_user
+        if user.id != SECOND_CHAT_ID:
+            await update.message.reply_text("Эта команда доступна только владельцу бота.")
+            return
+
+        try:
+            target_user = update.message.reply_to_message.from_user
+            if self.db.remove_admin(target_user.id):
+                await update.message.reply_text(f"Пользователь @{target_user.username} удален из администраторов.")
+            else:
+                await update.message.reply_text("Не удалось удалить администратора или он не был найден.")
+        except Exception as e:
+            logger.error(f"Error in remove_admin: {e}")
+            await update.message.reply_text("Ошибка при удалении администратора.")
+
+    async def list_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает список администраторов"""
+        try:
+            with self.db.conn.cursor() as cursor:
+                cursor.execute('SELECT user_id, username FROM admins ORDER BY added_at')
+                admins = cursor.fetchall()
+
+            if not admins:
+                await update.message.reply_text("Нет администраторов.")
+                return
+
+            admin_list = "\n".join([f"@{admin[1] or 'unknown'} (ID: {admin[0]})" for admin in admins])
+            await update.message.reply_text(f"Список администраторов:\n\n{admin_list}")
+        except Exception as e:
+            logger.error(f"Error in list_admins: {e}")
+            await update.message.reply_text("Ошибка при получении списка администраторов.")        
 
 def main():
     """Запуск бота"""
@@ -1031,6 +1130,11 @@ def main():
         # Регистрация inline обработчиков
         application.add_handler(InlineQueryHandler(handlers.inline_query))
         
+        # Регистрация обработчиков команд для администрирования
+        application.add_handler(CommandHandler("addadmin", handlers.add_admin))
+        application.add_handler(CommandHandler("removeadmin", handlers.remove_admin))
+        application.add_handler(CommandHandler("listadmins", handlers.list_admins))
+
         # Регистрация обработчиков кнопок
         application.add_handler(CallbackQueryHandler(
             handlers.handle_quantity_buttons,
