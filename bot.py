@@ -51,6 +51,9 @@ if ADMIN_CHAT_ID:
         logger.error(f"Ошибка парсинга ADMIN_CHAT_ID: {e}")
 MAX_ORDER_CANCEL_HOURS = 6
 
+# Добавим логирование для проверки
+logger.info(f"Bot started with ADMIN_IDS: {ADMIN_IDS}")
+
 # Состояния для ConversationHandler
 REGISTER_ORG, REGISTER_CONTACT = range(2)
 
@@ -87,19 +90,16 @@ DELIVERY_TIME_INTERVALS = [
     "10:30 - 12:30",
 ]
 
+# Генерация дат доставки
 def generate_delivery_dates():
-    """Генерирует список доступных дат доставки на ближайшие 7 дней"""
-    today = datetime.now().date()
+    today = datetime.now()
     dates = []
     date_keys = []
     
-    for i in range(7):
+    for i in range(1, 8):
         delivery_date = today + timedelta(days=i)
-        # Форматируем дату для отображения (день недели, число, месяц)
-        display_date = delivery_date.strftime("%a, %d.%m")
-        dates.append(display_date)
-        # Сохраняем ключ в формате YYYY-MM-DD
-        date_keys.append(delivery_date.strftime("%Y-%m-%d"))
+        dates.append(delivery_date.strftime("%d.%m"))
+        date_keys.append(f"delivery_date_{delivery_date.strftime('%Y-%m-%d')}")
     
     return dates, date_keys
 
@@ -107,20 +107,9 @@ class DatabaseManager:
     """Класс для управления PostgreSQL базой данных"""
     
     def __init__(self):
-        self.conn = None
-        try:
-            self.conn = self._connect()
-            self._init_db()
-        except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            raise
-
-    def _handle_db_error(self, e: Exception, operation: str) -> None:
-        """Унифицированная обработка ошибок базы данных"""
-        error_msg = f"Database error during {operation}: {e}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
+        self.conn = self._connect()
+        self._init_db()
+        
     def _connect(self):
         """Устанавливает соединение с PostgreSQL"""
         try:
@@ -210,7 +199,8 @@ class DatabaseManager:
                 self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            self._handle_db_error(e, "saving client")
+            logger.error(f"Error saving client {user_id}: {e}")
+            raise
 
     def get_client(self, user_id: int) -> Tuple[Optional[str], Optional[str]]:
         """Получает данные клиента из базы"""
@@ -393,15 +383,37 @@ class BotHandlers:
     """Класс для обработчиков бота"""
     
     def __init__(self):
-        self.user_carts = {}
-        self.current_editing = {}
-        self.selected_dates = {}
-        self.last_orders = {}
-        try:
-            self.db = DatabaseManager()
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            raise
+        self.user_carts = {}  # Временное хранилище корзин
+        self.current_editing = {}  # Текущий редактируемый товар
+        self.selected_dates = {}  # Выбранные даты доставки
+        self.last_orders = {}  # Последние заказы пользователей
+        self.db = DatabaseManager()
+
+    async def handle_registration_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик сообщений во время регистрации"""
+        user_id = update.message.from_user.id
+        current_state = await context.application.persistence.get_conversation(user_id)
+    
+        if current_state == REGISTER_ORG:
+            await self.register_org(update, context)
+        elif current_state == REGISTER_CONTACT:
+            await self.register_contact(update, context)
+        else:
+            # Если не в процессе регистрации, но сообщение похоже на регистрационное
+            await update.message.reply_text("Для регистрации используйте команду /start")
+
+    async def _show_main_menu(self, update: Update):
+        """Показывает главное меню"""
+        keyboard = [
+            [InlineKeyboardButton("🛒 Каталог", callback_data="catalog")],
+            [InlineKeyboardButton("📦 Мои заказы", callback_data="my_orders")],
+            [InlineKeyboardButton("ℹ️ О нас", callback_data="about")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "🏠 Главное меню",
+            reply_markup=reply_markup
+        )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -418,8 +430,6 @@ class BotHandlers:
                 )
                 return ConversationHandler.END
             else:
-                # Очищаем предыдущие данные, если они есть
-                context.user_data.clear()
                 await update.message.reply_text(
                     "Добро пожаловать! Для начала работы необходимо зарегистрироваться.\n"
                     "Пожалуйста, введите название вашей организации:"
@@ -433,18 +443,14 @@ class BotHandlers:
     async def register_org(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик ввода организации"""
         try:
-            organization = update.message.text.strip()
-            if not organization:
-                await update.message.reply_text("Название организации не может быть пустым. Пожалуйста, введите снова:")
-                return REGISTER_ORG
-                
-            context.user_data['organization'] = organization
+            context.user_data['organization'] = update.message.text
             await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
             return REGISTER_CONTACT
         except Exception as e:
-            logger.error(f"Error in register_org: {e}")
+            logger.error(f"Error in register_org: {str(e)}", exc_info=True)
             await update.message.reply_text(
-                "Произошла ошибка. Пожалуйста, попробуйте снова."
+                "Произошла ошибка при обработке названия организации. "
+                "Пожалуйста, попробуйте снова или обратитесь в поддержку."
             )
             return REGISTER_ORG
 
@@ -455,13 +461,10 @@ class BotHandlers:
             organization = context.user_data.get('organization')
             
             if not organization:
-                await update.message.reply_text("Ошибка регистрации. Пожалуйста, начните снова с /start")
-                return ConversationHandler.END
+                await update.message.reply_text("Сначала введите название организации через /start")
+                return REGISTER_ORG
                 
-            contact_person = update.message.text.strip()
-            if not contact_person:
-                await update.message.reply_text("Контактное лицо не может быть пустым. Пожалуйста, введите снова:")
-                return REGISTER_CONTACT
+            contact_person = update.message.text
             
             # Сохраняем данные в PostgreSQL
             self.db.save_client(
@@ -490,19 +493,17 @@ class BotHandlers:
             return ConversationHandler.END
             
         except psycopg2.Error as e:
-            logger.error(f"Database error in register_contact: {e}")
+            logger.error(f"Database error in register_contact: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Ошибка сохранения данных. Пожалуйста, попробуйте позже."
             )
             return REGISTER_CONTACT
         except Exception as e:
-            logger.error(f"Unexpected error in register_contact: {e}")
+            logger.error(f"Unexpected error in register_contact: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла непредвиденная ошибка. Пожалуйста, попробуйте снова."
             )
             return REGISTER_CONTACT
-
-    
 
     async def cancel_registration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отмена регистрации"""
@@ -571,13 +572,6 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
-        user_id = update.message.from_user.id
-        organization, _ = self.db.get_client(user_id)
-    
-        # Если пользователь не зарегистрирован, игнорируем сообщение
-        if not organization:
-            return
-    
         try:
             await update.message.delete()
         except Exception as e:
@@ -585,11 +579,13 @@ class BotHandlers:
 
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
-    
+        
         if (product := PRODUCTS_BY_TITLE.get(first_line)):
+            user_id = update.message.from_user.id
+            
             if user_id not in self.user_carts:
                 self.user_carts[user_id] = {"items": []}
-        
+            
             cart = self.user_carts[user_id]["items"]
             for item in cart:
                 if item["product"]["id"] == product["id"]:
@@ -597,7 +593,7 @@ class BotHandlers:
                     break
             else:
                 cart.append({"product": product, "quantity": 1})
-        
+            
             self.current_editing[user_id] = len(cart) - 1
             await self.show_cart(update, user_id)
 
@@ -1141,15 +1137,10 @@ def main():
     try:
         # Инициализация бота
         application = ApplicationBuilder().token(TOKEN).build()
+        handlers = BotHandlers()
         
-        # Инициализация обработчиков
-        try:
-            handlers = BotHandlers()
-        except Exception as e:
-            logger.error(f"Failed to initialize bot handlers: {e}")
-            raise
-
-        # Регистрация обработчиков команд (кроме start)
+        # Регистрация обработчиков команд
+        application.add_handler(CommandHandler("start", handlers.start))
         application.add_handler(CommandHandler("info", handlers.check_client_info))
         application.add_handler(CommandHandler("stats", handlers.admin_stats))
         application.add_handler(CommandHandler("add_admin", handlers.add_admin))
@@ -1160,8 +1151,14 @@ def main():
         
         # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
             handlers.handle_product_message
+        ))
+
+        # Новый обработчик для регистрационных сообщений
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
+            handlers.handle_registration_messages
         ))
         
         # Регистрация обработчика callback запросов
@@ -1175,7 +1172,6 @@ def main():
                 REGISTER_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_contact)],
             },
             fallbacks=[CommandHandler("cancel", handlers.cancel_registration)],
-            allow_reentry=True
         )
         application.add_handler(conv_handler)
         
@@ -1184,9 +1180,9 @@ def main():
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {e}", exc_info=True)
+        logger.error(f"Ошибка при запуске бота: {e}")
     finally:
-        if 'handlers' in locals() and hasattr(handlers, 'db'):
+        if hasattr(handlers, 'db'):
             handlers.db.close()
 
 if __name__ == "__main__":
