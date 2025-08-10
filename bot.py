@@ -590,10 +590,10 @@ class BotHandlers:
             self.current_editing[user_id] = len(cart) - 1
             await self.show_cart(update, user_id)
 
-        try:
-            await update.message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting message: {e}")
+        # try:
+        #     await update.message.delete()
+        # except Exception as e:
+        #     logger.error(f"Error deleting message: {e}")
 
     async def show_cart(self, update: Update, user_id: int, edit_message: bool = False):
         """Показывает корзину пользователя"""
