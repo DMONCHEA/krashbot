@@ -42,11 +42,17 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_IDS = os.getenv("ADMIN_CHAT_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
+ADMIN_IDS = []
+if ADMIN_CHAT_ID:
+    try:
+        ADMIN_IDS = [int(id.strip()) for id in ADMIN_CHAT_ID.split(",") if id.strip()]
+    except ValueError as e:
+        logger.error(f"Ошибка парсинга ADMIN_CHAT_ID: {e}")
 MAX_ORDER_CANCEL_HOURS = 6
 
-# Добавим логирование для проверки ADMIN_IDS
-logger.info(f"Initialized with ADMIN_IDS: {ADMIN_IDS}")
+# Добавим логирование для проверки
+logger.info(f"Bot started with ADMIN_IDS: {ADMIN_IDS}")
 
 # Состояния для ConversationHandler
 REGISTER_ORG, REGISTER_CONTACT = range(2)
@@ -762,8 +768,8 @@ class BotHandlers:
             text=order_text + "\nДля уточнения деталей с вами свяжется менеджер.",
             reply_markup=InlineKeyboardMarkup(keyboard))
         
-        # Уведомление в группу (если ADMIN_IDS не пуст)
-        if ADMIN_IDS:
+        # Уведомление в группу
+        if ADMIN_IDS:  # Проверяем, что есть кому отправлять
             admin_message = (
                 f"=== НОВЫЙ ЗАКАЗ ===\n\n"
                 f"🏢 Организация: {organization}\n"
@@ -777,13 +783,15 @@ class BotHandlers:
         for admin_id in ADMIN_IDS:
             try:
                 kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
-                await context.bot.send_message(
+                sent_message = await context.bot.send_message(
                     chat_id=admin_id,
                     text=admin_message,
                     reply_markup=InlineKeyboardMarkup(kb) if kb else None,
                     disable_notification=True
                 )
                 logger.info(f"Уведомление отправлено в чат {admin_id}")
+                if admin_id == ADMIN_IDS[0]:  # Сохраняем ID сообщения только для первого админа
+                    self.last_orders[user_id]["admin_message_id"] = sent_message.message_id
             except Exception as e:
                 logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
         else:
