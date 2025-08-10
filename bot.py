@@ -567,7 +567,16 @@ class BotHandlers:
         """Обработчик сообщений с товарами"""
         logger.info(f"handle_product_message called for user {update.message.from_user.id} in chat {update.message.chat.type}")
 
-        if context.user_data and context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
+        if context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
+            logger.info("Skipping product message due to registration state")
+            return
+        
+        # Проверяем, зарегистрирован ли пользователь
+        user_id = update.message.from_user.id
+        organization, contact_person = self.db.get_client(user_id)
+        if not organization:
+            logger.info(f"User {user_id} is not registered, ignoring product message")
+            await update.message.reply_text("Пожалуйста, завершите регистрацию с помощью команды /start")
             return
 
         message_text = update.message.text
