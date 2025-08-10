@@ -18,7 +18,8 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler,
     ConversationHandler,
-    ApplicationBuilder
+    ApplicationBuilder,
+    PicklePersistence  # Added for persistence
 )
 
 # Настройка логгирования
@@ -396,7 +397,6 @@ class BotHandlers:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
-
         context.user_data.clear()
         
         try:
@@ -561,7 +561,6 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
-
         logger.info(f"handle_product_message called for user {update.message.from_user.id} in chat {update.message.chat.type}")
 
         if context.user_data and context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
@@ -1097,8 +1096,9 @@ class BotHandlers:
 def main():
     """Запуск бота"""
     try:
-        # Инициализация бота
-        application = ApplicationBuilder().token(TOKEN).build()
+        # Инициализация бота с PicklePersistence
+        persistence = PicklePersistence(filepath="bot_persistence.pkl")
+        application = ApplicationBuilder().token(TOKEN).persistence(persistence).build()
         handlers = BotHandlers()
         
         # Регистрация обработчиков команд
