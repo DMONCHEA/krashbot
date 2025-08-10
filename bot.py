@@ -1127,7 +1127,7 @@ def main():
         # Регистрация обработчика callback запросов
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
-        # Регистрация обработчика регистрации
+        # Регистрация обработчика регистрации (ПЕРЕД MessageHandler для товаров)
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
             states={
@@ -1140,10 +1140,10 @@ def main():
         )
         application.add_handler(conv_handler)
         
-        # Регистрация обработчика сообщений с товарами
+        # Регистрация обработчика сообщений с товарами (ПОСЛЕ ConversationHandler)
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'),
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)'),
             handlers.handle_product_message
         ))
         
