@@ -8,6 +8,7 @@ from psycopg2 import extras
 from urllib.parse import urlparse
 import io
 import csv
+import re
 from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application,
@@ -428,6 +429,9 @@ class BotHandlers:
             org = update.message.text.strip()
             if not org:
                 await update.message.reply_text("Название организации не может быть пустым. Попробуйте снова:")
+                return REGISTER_ORG
+            if not re.match(r'^[А-Яа-яA-Za-z\s-]+$', org):
+                await update.message.reply_text("Название организации должно содержать только буквы, пробелы или дефисы. Попробуйте снова:")
                 return REGISTER_ORG
             context.user_data['organization'] = org
             await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
