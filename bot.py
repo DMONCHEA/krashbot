@@ -425,7 +425,11 @@ class BotHandlers:
     async def register_org(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик ввода организации"""
         try:
-            context.user_data['organization'] = update.message.text
+            org = update.message.text.strip()
+            if not org:
+                await update.message.reply_text("Название организации не может быть пустым. Попробуйте снова:")
+                return REGISTER_ORG
+            context.user_data['organization'] = org
             await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
             return REGISTER_CONTACT
         except Exception as e:
@@ -446,7 +450,10 @@ class BotHandlers:
                 await update.message.reply_text("Сначала введите название организации через /start")
                 return REGISTER_ORG
                 
-            contact_person = update.message.text
+            contact_person = update.message.text.strip()
+            if not contact_person:
+                await update.message.reply_text("Контактное лицо не может быть пустым. Попробуйте снова:")
+                return REGISTER_CONTACT
             
             # Сохраняем данные в PostgreSQL
             self.db.save_client(
@@ -555,13 +562,10 @@ class BotHandlers:
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
 
+        logger.info(f"handle_product_message called for user {update.message.from_user.id} in chat {update.message.chat.type}")
+
         if context.user_data and context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
             return
-
-        try:
-            await update.message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting message: {e}")
 
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
@@ -584,7 +588,7 @@ class BotHandlers:
             await self.show_cart(update, user_id)
 
         try:
-                await update.message.delete()
+            await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {e}")
 
@@ -1107,14 +1111,6 @@ def main():
         # Регистрация обработчика inline запросов
         application.add_handler(InlineQueryHandler(handlers.inline_query))
         
-        # Регистрация обработчика сообщений с товарами
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт)') &
-            ~filters.ChatType.PRIVATE,  # Разрешить только в групповых чатах
-            handlers.handle_product_message
-        ))
-        
         # Регистрация обработчика callback запросов
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
@@ -1130,6 +1126,13 @@ def main():
             name="registration_conversation"
         )
         application.add_handler(conv_handler)
+        
+        # Регистрация обработчика сообщений с товарами
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & 
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'),
+            handlers.handle_product_message
+        ))
         
         # Запуск бота
         logger.info("Бот запущен")
