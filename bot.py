@@ -23,6 +23,13 @@ from telegram.ext import (
     PicklePersistence  # Added for persistence
 )
 
+from telegram.ext import BaseFilter
+
+class NotInConversationFilter(BaseFilter):
+    def filter(self, update):
+        # Проверяем, что пользователь не в состоянии ConversationHandler
+        return not update._effective_user.get_user_data().get('__state__')
+
 # Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1143,7 +1150,7 @@ def main():
         # Регистрация обработчика сообщений с товарами (ПОСЛЕ ConversationHandler)
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)'),
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)') & NotInConversationFilter(),
             handlers.handle_product_message
         ))
         
