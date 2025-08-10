@@ -396,6 +396,9 @@ class BotHandlers:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
+
+        context.user_data.clear()
+        
         try:
             user = update.message.from_user
             organization, contact_person = self.db.get_client(user.id)
@@ -551,6 +554,10 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
+
+        if context.user_data and context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
+            return
+
         try:
             await update.message.delete()
         except Exception as e:
@@ -575,6 +582,11 @@ class BotHandlers:
             
             self.current_editing[user_id] = len(cart) - 1
             await self.show_cart(update, user_id)
+
+        try:
+                await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {e}")
 
     async def show_cart(self, update: Update, user_id: int, edit_message: bool = False):
         """Показывает корзину пользователя"""
@@ -1097,7 +1109,9 @@ def main():
         
         # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
+            filters.TEXT & ~filters.COMMAND & 
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт)') &
+            ~filters.ChatType.PRIVATE,  # Разрешить только в групповых чатах
             handlers.handle_product_message
         ))
         
@@ -1112,6 +1126,8 @@ def main():
                 REGISTER_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_contact)],
             },
             fallbacks=[CommandHandler("cancel", handlers.cancel_registration)],
+            persistent=True,
+            name="registration_conversation"
         )
         application.add_handler(conv_handler)
         
