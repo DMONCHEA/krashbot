@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-SECOND_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
+SECOND_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", 0))
 MAX_ORDER_CANCEL_HOURS = 6
 
 # Состояния для ConversationHandler
@@ -286,6 +286,19 @@ class BotHandlers:
         self.selected_dates = {}  # Выбранные даты доставки
         self.db = DatabaseManager()
 
+    async def _show_main_menu(self, update: Update):
+        """Показывает главное меню"""
+        keyboard = [
+            [InlineKeyboardButton("🛒 Каталог", callback_data="catalog")],
+            [InlineKeyboardButton("📦 Мои заказы", callback_data="my_orders")],
+            [InlineKeyboardButton("ℹ️ О нас", callback_data="about")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "🏠 Главное меню",
+            reply_markup=reply_markup
+        )
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         try:
@@ -305,137 +318,109 @@ class BotHandlers:
             await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
             return ConversationHandler.END
 
-async def register_org(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ввода организации"""
-    try:
-        context.user_data['organization'] = update.message.text
-        await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
-        return REGISTER_CONTACT
-    except Exception as e:
-        logger.error(f"Error in register_org: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            "Произошла ошибка при обработке названия организации. "
-            "Пожалуйста, попробуйте снова или обратитесь в поддержку."
-        )
-        return REGISTER_ORG
-
-async def register_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ввода контактного лица"""
-    try:
-        user = update.message.from_user
-        organization = context.user_data.get('organization')
-        
-        if not organization:
-            await update.message.reply_text("Сначала введите название организации через /start")
-            return REGISTER_ORG
-            
-        contact_person = update.message.text
-        
-        # Сохраняем данные в PostgreSQL
-        self.db.save_client(
-            user_id=user.id,
-            organization=organization,
-            contact_person=contact_person,
-            username=user.username
-        )
-        
-        logger.info(f"New user registered: {user.id} - {organization}")
-        
-        # Отправляем подтверждение
-        await update.message.reply_text(
-            "✅ Регистрация завершена!\n\n"
-            f"🏢 Организация: {organization}\n"
-            f"👤 Контактное лицо: {contact_person}\n\n"
-            "Теперь вы можете делать заказы!"
-        )
-        
-        await self._show_main_menu(update)
-        return ConversationHandler.END
-        
-    except psycopg2.Error as e:
-        logger.error(f"Database error in register_contact: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            "Ошибка сохранения данных. Пожалуйста, попробуйте позже."
-        )
-        return REGISTER_CONTACT
-    except Exception as e:
-        logger.error(f"Unexpected error in register_contact: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            "Произошла непредвиденная ошибка. Пожалуйста, попробуйте снова."
-        )
-        return REGISTER_CONTACT
-
-async def cancel_registration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена регистрации"""
-    try:
-        # Очищаем временные данные
-        if 'organization' in context.user_data:
-            del context.user_data['organization']
-            
-        await update.message.reply_text(
-            "Регистрация отменена.\n"
-            "Вы можете начать заново с помощью команды /start"
-        )
-        return ConversationHandler.END
-    except Exception as e:
-        logger.error(f"Error in cancel_registration: {str(e)}", exc_info=True)
-        await update.message.reply_text("Произошла ошибка при отмене регистрации.")
-        return ConversationHandler.END
-
-async def check_client_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает информацию о клиенте"""
-    try:
-        user_id = update.message.from_user.id
-        organization, contact_person = self.db.get_client(user_id)
-        
-        if organization:
+    async def register_org(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик ввода организации"""
+        try:
+            context.user_data['organization'] = update.message.text
+            await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
+            return REGISTER_CONTACT
+        except Exception as e:
+            logger.error(f"Error in register_org: {str(e)}", exc_info=True)
             await update.message.reply_text(
-                "📋 Ваши регистрационные данные:\n\n"
+                "Произошла ошибка при обработке названия организации. "
+                "Пожалуйста, попробуйте снова или обратитесь в поддержку."
+            )
+            return REGISTER_ORG
+
+    async def register_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик ввода контактного лица"""
+        try:
+            user = update.message.from_user
+            organization = context.user_data.get('organization')
+            
+            if not organization:
+                await update.message.reply_text("Сначала введите название организации через /start")
+                return REGISTER_ORG
+                
+            contact_person = update.message.text
+            
+            # Сохраняем данные в PostgreSQL
+            self.db.save_client(
+                user_id=user.id,
+                organization=organization,
+                contact_person=contact_person,
+                username=user.username
+            )
+            
+            logger.info(f"New user registered: {user.id} - {organization}")
+            
+            # Отправляем подтверждение
+            await update.message.reply_text(
+                "✅ Регистрация завершена!\n\n"
                 f"🏢 Организация: {organization}\n"
                 f"👤 Контактное лицо: {contact_person}\n\n"
-                "Для изменения данных обратитесь к менеджеру."
+                "Теперь вы можете делать заказы!"
             )
-        else:
+            
+            await self._show_main_menu(update)
+            return ConversationHandler.END
+            
+        except psycopg2.Error as e:
+            logger.error(f"Database error in register_contact: {str(e)}", exc_info=True)
             await update.message.reply_text(
-                "Вы еще не зарегистрированы!\n"
-                "Для регистрации используйте команду /start"
+                "Ошибка сохранения данных. Пожалуйста, попробуйте позже."
             )
-    except psycopg2.Error as e:
-        logger.error(f"Database error in check_client_info: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            "Ошибка получения данных. Пожалуйста, попробуйте позже."
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error in check_client_info: {str(e)}", exc_info=True)
-        await update.message.reply_text("Произошла непредвиденная ошибка.")
+            return REGISTER_CONTACT
+        except Exception as e:
+            logger.error(f"Unexpected error in register_contact: {str(e)}", exc_info=True)
+            await update.message.reply_text(
+                "Произошла непредвиденная ошибка. Пожалуйста, попробуйте снова."
+            )
+            return REGISTER_CONTACT
 
-async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка работоспособности бота"""
-    try:
-        # Проверка соединения с PostgreSQL
-        with self.db.conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            db_status = "✅"
-    except Exception as e:
-        db_status = f"❌ (Ошибка: {str(e)})"
-    
-    try:
-        user_count = self._get_user_count()
-        active_carts = len(self.user_carts)
-        
-        await update.message.reply_text(
-            "🛠 Статус системы:\n\n"
-            f"🔹 База данных: {db_status}\n"
-            f"🔹 Пользователей: {user_count}\n"
-            f"🔹 Активных корзин: {active_carts}\n\n"
-            "Бот работает в штатном режиме" if db_status == "✅" else "Имеются проблемы с БД"
-        )
-    except Exception as e:
-        logger.error(f"Error in health_check: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            "⚠️ Не удалось проверить статус системы. "
-            "Пожалуйста, обратитесь к администратору."
-        )
+    async def cancel_registration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отмена регистрации"""
+        try:
+            # Очищаем временные данные
+            if 'organization' in context.user_data:
+                del context.user_data['organization']
+                
+            await update.message.reply_text(
+                "Регистрация отменена.\n"
+                "Вы можете начать заново с помощью команды /start"
+            )
+            return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"Error in cancel_registration: {str(e)}", exc_info=True)
+            await update.message.reply_text("Произошла ошибка при отмене регистрации.")
+            return ConversationHandler.END
+
+    async def check_client_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает информацию о клиенте"""
+        try:
+            user_id = update.message.from_user.id
+            organization, contact_person = self.db.get_client(user_id)
+            
+            if organization:
+                await update.message.reply_text(
+                    "📋 Ваши регистрационные данные:\n\n"
+                    f"🏢 Организация: {organization}\n"
+                    f"👤 Контактное лицо: {contact_person}\n\n"
+                    "Для изменения данных обратитесь к менеджеру."
+                )
+            else:
+                await update.message.reply_text(
+                    "Вы еще не зарегистрированы!\n"
+                    "Для регистрации используйте команду /start"
+                )
+        except psycopg2.Error as e:
+            logger.error(f"Database error in check_client_info: {str(e)}", exc_info=True)
+            await update.message.reply_text(
+                "Ошибка получения данных. Пожалуйста, попробуйте позже."
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in check_client_info: {str(e)}", exc_info=True)
+            await update.message.reply_text("Произошла непредвиденная ошибка.")
 
     def _get_user_count(self) -> int:
         """Возвращает количество зарегистрированных пользователей"""
@@ -450,18 +435,74 @@ async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE)
     async def health_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Проверка работоспособности бота"""
         try:
-            # Проверка соединения с базой данных
+            # Проверка соединения с PostgreSQL
             with self.db.conn.cursor() as cursor:
                 cursor.execute("SELECT 1")
+                db_status = "✅"
+        except Exception as e:
+            db_status = f"❌ (Ошибка: {str(e)})"
+        
+        try:
+            user_count = self._get_user_count()
+            active_carts = len(self.user_carts)
             
             await update.message.reply_text(
-                "✅ Бот работает нормально\n"
-                f"📊 Пользователей: {self._get_user_count()}\n"
-                f"🛒 Активных корзин: {len(self.user_carts)}"
+                "🛠 Статус системы:\n\n"
+                f"🔹 База данных: {db_status}\n"
+                f"🔹 Пользователей: {user_count}\n"
+                f"🔹 Активных корзин: {active_carts}\n\n"
+                "Бот работает в штатном режиме" if db_status == "✅" else "Имеются проблемы с БД"
             )
         except Exception as e:
-            logger.error(f"Health check failed: {e}")
-            await update.message.reply_text(f"⚠️ Бот испытывает проблемы\n{str(e)}")
+            logger.error(f"Error in health_check: {str(e)}", exc_info=True)
+            await update.message.reply_text(
+                "⚠️ Не удалось проверить статус системы. "
+                "Пожалуйста, обратитесь к администратору."
+            )
+
+    async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик inline запросов"""
+        query = update.inline_query.query
+        results = []
+        
+        for product in PRODUCTS:
+            if query.lower() in product["title"].lower():
+                results.append(
+                    InlineQueryResultArticle(
+                        id=product["id"],
+                        title=product["title"],
+                        description=product["description"],
+                        thumb_url=product["thumb_url"],
+                        input_message_content=InputTextMessageContent(
+                            f"{product['title']}\n{product['description']}"
+                        )
+                    )
+                )
+        
+        await update.inline_query.answer(results)
+
+    async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик сообщений с товарами"""
+        text = update.message.text
+        if text in PRODUCTS_BY_TITLE:
+            product = PRODUCTS_BY_TITLE[text]
+            await update.message.reply_photo(
+                photo=product["photo_url"],
+                caption=f"{product['title']}\n{product['description']}"
+            )
+
+    async def handle_quantity_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик кнопок выбора количества"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        user_id = query.from_user.id
+        
+        if data.startswith("add_"):
+            product_id = data[4:]
+            # Логика добавления товара в корзину
+            await query.edit_message_text(f"Товар {product_id} добавлен в корзину")
 
 def main():
     """Запуск бота"""
