@@ -2,10 +2,13 @@ import os
 import logging
 from typing import Dict, Any, Optional, Tuple, List
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import psycopg2
 from psycopg2 import extras, sql
 from urllib.parse import urlparse
+import io
+import csv
+from telegram import InputFile
 
 from telegram import (
     InlineKeyboardButton,
@@ -276,6 +279,36 @@ class DatabaseManager:
         if self.conn and not self.conn.closed:
             self.conn.close()
             logger.info("Database connection closed")
+    
+    def get_monthly_croissant_stats(self, start_date: str, end_date: str) -> List[Dict]:
+        """Возвращает статистику по круассантам за период с временными промежутками"""
+        try:
+            with self.conn.cursor(cursor_factory=extras.DictCursor) as cursor:
+                cursor.execute('''
+                    SELECT 
+                        c.organization AS "Клиент",
+                        o.delivery_date AS "Дата доставки",
+                        o.delivery_time AS "Временной промежуток",
+                        SUM(CASE WHEN (o.order_data->>'product_type') = 'classic' THEN (o.order_data->>'quantity')::INT ELSE 0 END) AS "Классические",
+                        SUM(CASE WHEN (o.order_data->>'product_type') = 'chocolate' THEN (o.order_data->>'quantity')::INT ELSE 0 END) AS "Шоколадные",
+                        SUM(CASE WHEN (o.order_data->>'product_type') = 'mini' THEN (o.order_data->>'quantity')::INT ELSE 0 END) AS "Мини",
+                        SUM((o.order_data->>'quantity')::INT) AS "Итого"
+                    FROM 
+                        clients c
+                    JOIN 
+                        orders o ON c.user_id = o.user_id
+                    WHERE 
+                        o.created_at BETWEEN %s AND %s
+                        AND o.status = 'active'
+                    GROUP BY 
+                        c.organization, o.delivery_date, o.delivery_time
+                    ORDER BY 
+                        c.organization, o.delivery_date, o.delivery_time;
+                ''', (start_date, end_date))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting monthly stats: {e}")
+            return []
 
 class BotHandlers:
     """Класс для обработчиков бота"""
@@ -504,6 +537,86 @@ class BotHandlers:
             # Логика добавления товара в корзину
             await query.edit_message_text(f"Товар {product_id} добавлен в корзину")
 
+    async def send_monthly_report(self, context: ContextTypes.DEFAULT_TYPE):
+        """Автоматическая отправка отчета в конце месяца"""
+        try:
+            today = datetime.now()
+            first_day = today.replace(day=1)
+            last_month_end = first_day - timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            
+            start_date = last_month_start.strftime('%Y-%m-%d')
+            end_date = last_month_end.strftime('%Y-%m-%d')
+            
+            await context.bot.send_message(
+                chat_id=SECOND_CHAT_ID,
+                text=f"📊 Отчет по заказам круассанов за период {start_date} - {end_date}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📥 Выгрузить данные", 
+                        callback_data=f"export_{start_date}_{end_date}"
+                    )
+                ]])
+            )
+        except Exception as e:
+            logger.error(f"Error in monthly report: {e}")
+
+    async def handle_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик кнопки выгрузки"""
+        query = update.callback_query
+        await query.answer()
+        
+        try:
+            _, start_date, end_date = query.data.split('_')
+            stats = self.db.get_monthly_croissant_stats(start_date, end_date)
+            
+            if not stats:
+                await query.edit_message_text("Нет данных для выгрузки")
+                return
+            
+            # Создаем CSV файл
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=stats[0].keys())
+            writer.writeheader()
+            writer.writerows(stats)
+            
+            # Отправляем файл
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=InputFile(
+                    io.BytesIO(output.getvalue().encode('utf-8')),
+                    filename=f"croissants_{start_date}_to_{end_date}.csv"
+                ),
+                caption=f"Отчет за период {start_date} - {end_date}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Export error: {e}")
+            await query.edit_message_text("Ошибка при выгрузке отчета")
+
+    async def test_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для тестирования отчета (/testreport)"""
+        if update.effective_user.id != SECOND_CHAT_ID:
+            await update.message.reply_text("Эта команда только для администратора")
+            return
+            
+        try:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            
+            await update.message.reply_text(
+                f"Тестовая выгрузка отчета за период {start_date} - {end_date}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📥 Тестовая выгрузка", 
+                        callback_data=f"export_{start_date}_{end_date}"
+                    )
+                ]])
+            )
+        except Exception as e:
+            logger.error(f"Test report error: {e}")
+            await update.message.reply_text("Ошибка тестирования")
+
 def main():
     """Запуск бота"""
     # Проверка обязательных переменных окружения перед запуском
@@ -551,8 +664,20 @@ def main():
         app.add_handler(InlineQueryHandler(handlers.inline_query))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_product_message))
         app.add_handler(CallbackQueryHandler(handlers.handle_quantity_buttons))
+        app.add_handler(CallbackQueryHandler(handlers.handle_export, pattern="^export_"))
+        app.add_handler(CommandHandler("testreport", handlers.test_report))
         
         logger.info("Бот запускается...")
+
+        # Планировщик для ежемесячного отчета
+        job_queue = app.job_queue
+        if job_queue:
+            job_queue.run_monthly(
+                handlers.send_monthly_report,
+                day=1,
+                time=time(hour=10, minute=0),
+                context=None
+            )
         
         # Запуск бота
         if os.getenv("RAILWAY_ENVIRONMENT"):
