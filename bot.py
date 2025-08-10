@@ -572,6 +572,13 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
+        user_id = update.message.from_user.id
+        organization, _ = self.db.get_client(user_id)
+    
+        # Если пользователь не зарегистрирован, игнорируем сообщение
+        if not organization:
+            return
+    
         try:
             await update.message.delete()
         except Exception as e:
@@ -579,13 +586,11 @@ class BotHandlers:
 
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
-        
+    
         if (product := PRODUCTS_BY_TITLE.get(first_line)):
-            user_id = update.message.from_user.id
-            
             if user_id not in self.user_carts:
                 self.user_carts[user_id] = {"items": []}
-            
+        
             cart = self.user_carts[user_id]["items"]
             for item in cart:
                 if item["product"]["id"] == product["id"]:
@@ -593,7 +598,7 @@ class BotHandlers:
                     break
             else:
                 cart.append({"product": product, "quantity": 1})
-            
+        
             self.current_editing[user_id] = len(cart) - 1
             await self.show_cart(update, user_id)
 
@@ -1149,22 +1154,16 @@ def main():
         # Регистрация обработчика inline запросов
         application.add_handler(InlineQueryHandler(handlers.inline_query))
         
-        # Регистрация обработчика сообщений с товарами
+        # Регистрация обработчика сообщений с товарами (только для зарегистрированных пользователей)
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
+            filters.TEXT & ~filters.COMMAND,
             handlers.handle_product_message
-        ))
-
-        # Новый обработчик для регистрационных сообщений
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
-            handlers.handle_registration_messages
         ))
         
         # Регистрация обработчика callback запросов
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
-        # Регистрация обработчика регистрации
+        # Регистрация обработчика регистрации (должен быть добавлен ПОСЛЕ других обработчиков)
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
             states={
@@ -1180,7 +1179,7 @@ def main():
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {e}")
+        logger.error(f"Ошибка при запуске бота: {e}", exc_info=True)
     finally:
         if hasattr(handlers, 'db'):
             handlers.db.close()
