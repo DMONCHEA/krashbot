@@ -762,16 +762,32 @@ class BotHandlers:
             text=order_text + "\nДля уточнения деталей с вами свяжется менеджер.",
             reply_markup=InlineKeyboardMarkup(keyboard))
         
-        # Уведомление в группу
-        admin_message = (
-            f"=== НОВЫЙ ЗАКАЗ ===\n\n"
-            f"🏢 Организация: {organization}\n"
-            f"👤 Контакт: {contact_person}\n"
-            f"📱 Телеграм: @{user.username if user.username else 'не указан'}\n"
-            f"📅 Доставка: {delivery_date.strftime('%d.%m.%Y')} {time_str}\n"
-            f"🆔 Номер заказа: {order_id}\n\n"
-            "Состав заказа:\n" + "\n".join(order_lines)
-        )
+        # Уведомление в группу (если ADMIN_IDS не пуст)
+        if ADMIN_IDS:
+            admin_message = (
+                f"=== НОВЫЙ ЗАКАЗ ===\n\n"
+                f"🏢 Организация: {organization}\n"
+                f"👤 Контакт: {contact_person}\n"
+                f"📱 Телеграм: @{user.username if user.username else 'не указан'}\n"
+                f"📅 Доставка: {delivery_date.strftime('%d.%m.%Y')} {time_str}\n"
+                f"🆔 Номер заказа: {order_id}\n\n"
+                "Состав заказа:\n" + "\n".join(order_lines)
+            )
+
+        for admin_id in ADMIN_IDS:
+            try:
+                kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=InlineKeyboardMarkup(kb) if kb else None,
+                    disable_notification=True
+                )
+                logger.info(f"Уведомление отправлено в чат {admin_id}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
+        else:
+            logger.error("Не удалось отправить уведомление: ADMIN_IDS пуст!")
         
         # Добавим логирование перед отправкой
         logger.info(f"Attempting to send order notification to ADMIN_IDS: {ADMIN_IDS}")
