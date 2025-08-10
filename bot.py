@@ -2,21 +2,13 @@ import os
 import logging
 from typing import Dict, Any, Optional, Tuple, List
 import json
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import psycopg2
-from psycopg2 import extras, sql
+from psycopg2 import extras
 from urllib.parse import urlparse
 import io
 import csv
-from telegram import InputFile
-
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-    InlineQueryResultArticle,
-    InputTextMessageContent
-)
+from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -388,19 +380,6 @@ class BotHandlers:
         self.selected_dates = {}  # Выбранные даты доставки
         self.last_orders = {}  # Последние заказы пользователей
         self.db = DatabaseManager()
-
-    async def handle_registration_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик сообщений во время регистрации"""
-        user_id = update.message.from_user.id
-        current_state = await context.application.persistence.get_conversation(user_id)
-    
-        if current_state == REGISTER_ORG:
-            await self.register_org(update, context)
-        elif current_state == REGISTER_CONTACT:
-            await self.register_contact(update, context)
-        else:
-            # Если не в процессе регистрации, но сообщение похоже на регистрационное
-            await update.message.reply_text("Для регистрации используйте команду /start")
 
     async def _show_main_menu(self, update: Update):
         """Показывает главное меню"""
@@ -781,8 +760,8 @@ class BotHandlers:
             text=order_text + "\nДля уточнения деталей с вами свяжется менеджер.",
             reply_markup=InlineKeyboardMarkup(keyboard))
         
-        # Уведомление в группу
-        if ADMIN_IDS:  # Проверяем, что есть кому отправлять
+        # Уведомление в группу (только один раз)
+        if ADMIN_IDS:
             admin_message = (
                 f"=== НОВЫЙ ЗАКАЗ ===\n\n"
                 f"🏢 Организация: {organization}\n"
@@ -792,56 +771,23 @@ class BotHandlers:
                 f"🆔 Номер заказа: {order_id}\n\n"
                 "Состав заказа:\n" + "\n".join(order_lines)
             )
-
-        for admin_id in ADMIN_IDS:
-            try:
-                kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
-                sent_message = await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_message,
-                    reply_markup=InlineKeyboardMarkup(kb) if kb else None,
-                    disable_notification=True
-                )
-                logger.info(f"Уведомление отправлено в чат {admin_id}")
-                if admin_id == ADMIN_IDS[0]:  # Сохраняем ID сообщения только для первого админа
-                    self.last_orders[user_id]["admin_message_id"] = sent_message.message_id
-            except Exception as e:
-                logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
-        else:
-            logger.error("Не удалось отправить уведомление: ADMIN_IDS пуст!")
-        
-        # Добавим логирование перед отправкой
-        logger.info(f"Attempting to send order notification to ADMIN_IDS: {ADMIN_IDS}")
-        
-        if not ADMIN_IDS:
-            logger.error("Cannot send notification - ADMIN_IDS is empty")
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="⚠️ Произошла ошибка при обработке заказа. Пожалуйста, свяжитесь с @Krash_order_Bot"
-            )
-            return
             
-        try:
-            kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
             for admin_id in ADMIN_IDS:
                 try:
+                    kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
                     sent_message = await context.bot.send_message(
                         chat_id=admin_id,
                         text=admin_message,
                         reply_markup=InlineKeyboardMarkup(kb) if kb else None,
                         disable_notification=True
                     )
-                    logger.info(f"Notification sent successfully to {admin_id}")
-                    if admin_id == ADMIN_IDS[0]:  # Сохраняем ID сообщения только для первого админа
+                    logger.info(f"Уведомление отправлено в чат {admin_id}")
+                    if admin_id == ADMIN_IDS[0]:
                         self.last_orders[user_id]["admin_message_id"] = sent_message.message_id
                 except Exception as e:
-                    logger.error(f"Failed to send notification to {admin_id}: {e}")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомления: {e}")
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="⚠️ Произошла ошибка при обработке заказа. Пожалуйста, свяжитесь с @Krash_order_Bot"
-            )
+                    logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
+        else:
+            logger.error("Не удалось отправить уведомление: ADMIN_IDS пуст!")
         
         # Очистка данных
         self.user_carts[user_id] = {"items": []}
@@ -1153,12 +1099,6 @@ def main():
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
             handlers.handle_product_message
-        ))
-
-        # Новый обработчик для регистрационных сообщений
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r'(?i)^(регистрация|организация|контакт)'), 
-            handlers.handle_registration_messages
         ))
         
         # Регистрация обработчика callback запросов
