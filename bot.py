@@ -45,6 +45,9 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_CHAT_ID", "").split(",") if id.strip() and id.strip().isdigit()]
 MAX_ORDER_CANCEL_HOURS = 6
 
+# Добавим логирование для проверки ADMIN_IDS
+logger.info(f"Initialized with ADMIN_IDS: {ADMIN_IDS}")
+
 # Состояния для ConversationHandler
 REGISTER_ORG, REGISTER_CONTACT = range(2)
 
@@ -709,7 +712,7 @@ class BotHandlers:
         )
         
         order_text = "✅ Ваш заказ оформлен!\n\n" + "\n".join(order_lines) + delivery_info
-        
+
         # Сохраняем заказ в базу данных
         order_data = {
             "items": [{
@@ -728,6 +731,7 @@ class BotHandlers:
                 delivery_date=date_str,
                 delivery_time=time_str
             )
+            logger.info(f"Order #{order_id} saved successfully for user {user_id}")
         except Exception as e:
             logger.error(f"Error saving order: {e}")
             await query.edit_message_text(
@@ -769,15 +773,32 @@ class BotHandlers:
             "Состав заказа:\n" + "\n".join(order_lines)
         )
         
+        # Добавим логирование перед отправкой
+        logger.info(f"Attempting to send order notification to ADMIN_IDS: {ADMIN_IDS}")
+        
+        if not ADMIN_IDS:
+            logger.error("Cannot send notification - ADMIN_IDS is empty")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⚠️ Произошла ошибка при обработке заказа. Пожалуйста, свяжитесь с @Krash_order_Bot"
+            )
+            return
+            
         try:
             kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
-            sent_message = await context.bot.send_message(
-                chat_id=ADMIN_IDS[0],  # Отправляем только первому администратору
-                text=admin_message,
-                reply_markup=InlineKeyboardMarkup(kb) if kb else None,
-                disable_notification=True
-            )
-            self.last_orders[user_id]["admin_message_id"] = sent_message.message_id
+            for admin_id in ADMIN_IDS:
+                try:
+                    sent_message = await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_message,
+                        reply_markup=InlineKeyboardMarkup(kb) if kb else None,
+                        disable_notification=True
+                    )
+                    logger.info(f"Notification sent successfully to {admin_id}")
+                    if admin_id == ADMIN_IDS[0]:  # Сохраняем ID сообщения только для первого админа
+                        self.last_orders[user_id]["admin_message_id"] = sent_message.message_id
+                except Exception as e:
+                    logger.error(f"Failed to send notification to {admin_id}: {e}")
         except Exception as e:
             logger.error(f"Ошибка при отправке уведомления: {e}")
             await context.bot.send_message(
