@@ -2,8 +2,10 @@ import os
 import logging
 import re
 import json
+import io
+import csv
 from typing import Dict, Tuple, Any, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent, InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -285,7 +287,7 @@ class BotHandlers:
             logger.error(f"Error in register_org for user {user_id}: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла ошибка при обработке названия организации. "
-                "Пожалуйста, попробуйте снова или обратитесь в поддержку."
+                "Пожалуйста, попробуйте снова или обратитесь в поддержке."
             )
             return REGISTER_ORG
     
