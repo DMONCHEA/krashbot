@@ -80,6 +80,7 @@ DELIVERY_TIME_INTERVALS = [
     "9:30 - 11:30",
     "10:00 - 12:00",
     "10:30 - 12:30",
+    "11:00 - 13:00"
 ]
 
 # Генерация дат доставки
@@ -547,9 +548,11 @@ class BotHandlers:
         user_id = update.callback_query.from_user.id
         keyboard = [
             [InlineKeyboardButton(interval, callback_data=f"delivery_time_{interval}") 
-             for interval in DELIVERY_TIME_INTERVALS[i:i+2]]
-            for i in range(0, len(DELIVERY_TIME_INTERVALS), 2)
+            for interval in DELIVERY_TIME_INTERVALS[i:i+2]]
+            for i in range(0, len(DELIVERY_TIME_INTERVALS)-1, 2)  # Исключаем последний интервал
         ]
+        # Добавляем последний интервал как отдельную кнопку внизу
+        keyboard.append([InlineKeyboardButton(DELIVERY_TIME_INTERVALS[-1], callback_data=f"delivery_time_{DELIVERY_TIME_INTERVALS[-1]}")])
         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_dates")])
         
         await update.callback_query.edit_message_text(
