@@ -374,7 +374,7 @@ class BotHandlers:
                         id=product["id"],
                         title=product["title"],
                         description=product["description"],
-                        thumb_url=product["thumb_url"],
+                        thumbnail_url=product["thumb_url"],
                         input_message_content=InputTextMessageContent(
                             f"{product['title']}\n{product['description']}"
                         )
