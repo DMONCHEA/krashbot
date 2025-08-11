@@ -285,7 +285,7 @@ class BotHandlers:
             logger.error(f"Error in register_org for user {user_id}: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла ошибка при обработке названия организации. "
-                "Пожалуйста, попробуйте снова или обратитесь в поддержке."
+                "Пожалуйста, попробуйте снова или обратитесь в поддержку."
             )
             return REGISTER_ORG
     
@@ -336,6 +336,17 @@ class BotHandlers:
         context.user_data.clear()
         await update.message.reply_text("Регистрация отменена. Начните заново с /start.")
         return ConversationHandler.END
+    
+    async def check_client_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /info"""
+        user_id = update.message.from_user.id
+        organization, contact_person = self.db.get_client(user_id)
+        if organization and contact_person:
+            await update.message.reply_text(
+                f"Ваши данные:\nОрганизация: {organization}\nКонтактное лицо: {contact_person}"
+            )
+        else:
+            await update.message.reply_text("Вы не зарегистрированы. Пожалуйста, используйте /start для регистрации.")
     
     async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик inline-запросов для меню продуктов"""
@@ -864,6 +875,17 @@ class BotHandlers:
                 await update.message.reply_text("Этот пользователь не является администратором.")
         except ValueError:
             await update.message.reply_text("Некорректный ID пользователя.")
+
+    async def _show_main_menu(self, update: Update):
+        """Показывает главное меню"""
+        await update.callback_query.edit_message_text(
+            text="Выберите действие:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+                [InlineKeyboardButton("📦 Мои заказы", callback_data="my_orders")],
+                [InlineKeyboardButton("ℹ️ О нас", callback_data="about")]
+            ])
+        )
 
 def main():
     """Запуск бота"""
