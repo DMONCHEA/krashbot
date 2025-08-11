@@ -1,7 +1,7 @@
 import os
 import logging
 import re
-from typing import Dict, Tuple, Any, Optional  # Добавляем Optional, Any, Dict, Tuple
+from typing import Dict, Tuple, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -377,10 +377,9 @@ def main():
         application.add_handler(CommandHandler("add_admin", handlers.add_admin))
         application.add_handler(CommandHandler("remove_admin", handlers.remove_admin))
         
-        # Регистрация MessageHandler для товаров (только для зарегистрированных пользователей)
-        registered_users = [user_id for user_id, (org, _) in handlers.db.get_all_clients().items() if org]
+        # Регистрация MessageHandler для товаров
         application.add_handler(MessageHandler(
-            filters=filters.TEXT & ~filters.COMMAND & filters.User(user_ids=registered_users),
+            filters=filters.TEXT & ~filters.COMMAND,
             callback=handlers.handle_product_message,
             block=False
         ))
