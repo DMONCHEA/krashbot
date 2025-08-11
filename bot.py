@@ -548,7 +548,7 @@ class BotHandlers:
         user_id = update.callback_query.from_user.id
         keyboard = [
             [InlineKeyboardButton(interval, callback_data=f"delivery_time_{interval}") 
-            for interval in DELIVERY_TIME_INTERVALS[i:i+2]]
+             for interval in DELIVERY_TIME_INTERVALS[i:i+2]]
             for i in range(0, len(DELIVERY_TIME_INTERVALS)-1, 2)  # Исключаем последний интервал
         ]
         # Добавляем последний интервал как отдельную кнопку внизу
@@ -636,7 +636,8 @@ class BotHandlers:
         self.last_orders[user_id] = {
             "order_id": order_id,
             "order_text": order_text,
-            "delivery_datetime": delivery_datetime
+            "delivery_datetime": delivery_datetime,
+            "admin_message_ids": {}  # Храним ID сообщений для каждого админа
         }
         
         # Добавляем кнопку отмены заказа
@@ -670,13 +671,14 @@ class BotHandlers:
             for admin_id in ADMIN_IDS:
                 try:
                     kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
-                    await context.bot.send_message(
+                    message = await context.bot.send_message(
                         chat_id=admin_id,
                         text=admin_message,
                         reply_markup=InlineKeyboardMarkup(kb) if kb else None,
                         disable_notification=True
                     )
-                    logger.info(f"Уведомление отправлено в чат {admin_id}")
+                    self.last_orders[user_id]["admin_message_ids"][admin_id] = message.message_id
+                    logger.info(f"Уведомление отправлено в чат {admin_id}, message_id: {message.message_id}")
                 except Exception as e:
                     logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
         else:
@@ -701,7 +703,7 @@ class BotHandlers:
         time_left = delivery_datetime - datetime.now()
         
         if time_left <= timedelta(hours=6):
-            order_text = "\n".join(order_data["order_text"].split("\n")[1:])
+            order_text = "\n".join(order_data["order_text"].split("\n")[2:])  # Убираем "Ваш заказ оформлен"
             await query.edit_message_text(
                 text="⚠️ Отмена заказа возможна не позднее чем за 6 часов до доставки. Сейчас отменить заказ уже нельзя.\n\n" + 
                      order_text,
@@ -716,22 +718,30 @@ class BotHandlers:
             await query.edit_message_text(text="Не удалось отменить заказ. Пожалуйста, свяжитесь с менеджером.")
             return
         
-        # Уведомляем администратора об отмене
-        if "admin_message_id" in order_data:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_IDS[0],
-                    text=f"⚠️ ЗАКАЗ ОТМЕНЕН ⚠️\n\n"
-                         f"Заказ №{order_data['order_id']} был отменен клиентом.\n"
-                         f"Оригинальное сообщение:\n\n{order_data['order_text']}",
-                    reply_to_message_id=order_data["admin_message_id"]
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при отправке уведомления об отмене: {e}")
+        # Уведомляем администраторов об отмене
+        if ADMIN_IDS:
+            cancel_message = (
+                f"⚠️ ЗАКАЗ ОТМЕНЕН ⚠️\n\n"
+                f"Заказ №{order_data['order_id']} был отменен клиентом.\n"
+                f"Оригинальное сообщение:\n\n{order_data['order_text']}"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    reply_to_message_id = order_data["admin_message_ids"].get(admin_id)
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=cancel_message,
+                        reply_to_message_id=reply_to_message_id,
+                        disable_notification=True
+                    )
+                    logger.info(f"Уведомление об отмене заказа #{order_data['order_id']} отправлено в чат {admin_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке уведомления об отмене в чат {admin_id}: {e}")
 
         # Обновляем сообщение для пользователя
+        order_text = "\n".join(order_data["order_text"].split("\n")[2:])  # Убираем "Ваш заказ оформлен"
         await query.edit_message_text(
-            text="❌ Ваш заказ был отменен.\n\n" + order_data["order_text"],
+            text="❌ Заказ отменен\n\n" + order_text,
             reply_markup=None
         )
         
