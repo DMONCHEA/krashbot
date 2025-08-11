@@ -21,6 +21,8 @@ import psycopg2
 from psycopg2 import extras
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from collections import defaultdict
+from calendar import monthrange
 
 # Настройка логгирования
 logging.basicConfig(
@@ -844,81 +846,159 @@ class BotHandlers:
             await update.message.reply_text("Эта команда доступна только администраторам.")
             return
         
-        # Определение даты: аргумент команды или завтра по умолчанию
+        now = datetime.now()
+        is_month = False
+        start_date = None
+        end_date = None
+        
         if context.args:
             date_input = context.args[0].strip()
+            parts = date_input.split('.')
+            if len(parts) != 2:
+                await update.message.reply_text("Некорректный формат. Используйте DD.MM для дня или MM.YYYY для месяца.")
+                return
+            
             try:
-                # Парсим формат DD.MM
-                day, month = map(int, date_input.split('.'))
-                year = datetime.now().year
-                target_date = datetime(year, month, day)
+                if len(parts[1]) == 2:  # Формат DD.MM - день
+                    day, month = map(int, parts)
+                    year = now.year
+                    target_date = datetime(year, month, day)
+                    start_date = end_date = target_date.strftime("%Y-%m-%d")
+                    date_display = target_date.strftime("%d.%m")
+                    period_display = f"Данные за {date_display}"
+                elif len(parts[1]) == 4:  # Формат MM.YYYY - месяц
+                    month, year = map(int, parts)
+                    is_month = True
+                    _, last_day = monthrange(year, month)
+                    start_date = datetime(year, month, 1).strftime("%Y-%m-%d")
+                    end_date = datetime(year, month, last_day).strftime("%Y-%m-%d")
+                    period_display = f"Данные с {datetime(year, month, 1).strftime('%d.%m')} по {datetime(year, month, last_day).strftime('%d.%m')}"
+                else:
+                    await update.message.reply_text("Некорректный формат. Используйте DD.MM для дня или MM.YYYY для месяца.")
+                    return
             except ValueError:
-                await update.message.reply_text("Некорректный формат даты. Используйте DD.MM, например: /stats 12.08")
+                await update.message.reply_text("Некорректный формат даты. Используйте DD.MM для дня или MM.YYYY для месяца.")
                 return
         else:
-            # По умолчанию завтра
-            target_date = datetime.now() + timedelta(days=1)
+            # Без аргументов - текущий месяц
+            is_month = True
+            year = now.year
+            month = now.month
+            _, last_day = monthrange(year, month)
+            start_date = datetime(year, month, 1).strftime("%Y-%m-%d")
+            end_date = datetime(year, month, last_day).strftime("%Y-%m-%d")
+            period_display = f"Данные с {datetime(year, month, 1).strftime('%d.%m')} по {datetime(year, month, last_day).strftime('%d.%m')}"
         
-        date_str = target_date.strftime("%Y-%m-%d")
-        date_display = target_date.strftime("%d.%m")
-        
-        orders = self.db.get_orders_for_date(date_str)
-        
-        # Агрегация по пользователям (остальной код без изменений)
-        user_orders = {}
-        for order in orders:
-            order_data = order['order_data']
-            user_id = order['user_id']
-            if user_id not in user_orders:
-                user_orders[user_id] = {
-                    'contact': order_data['contact_person'],
-                    'org': order_data['organization'],
-                    'quantities': [0] * 13  # Для продуктов 1-13
-                }
-            
-            for item in order_data['items']:
-                prod_id = int(item['product']['id']) - 1  # 0-12 index
-                if 0 <= prod_id < 13:
-                    user_orders[user_id]['quantities'][prod_id] += item['quantity']
-        
-        if not user_orders:
-            await update.message.reply_text(f"Нет активных заказов на {date_display}.")
+        # Запрос заказов за период
+        try:
+            self.cursor.execute("""
+                SELECT order_id, user_id, order_data, delivery_date, delivery_time 
+                FROM orders 
+                WHERE delivery_date BETWEEN %s AND %s AND status = 'active'
+            """, (start_date, end_date))
+            orders = self.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error fetching orders for period {start_date} to {end_date}: {e}")
+            await update.message.reply_text("Ошибка при получении данных. Попробуйте позже.")
             return
         
-        # Подготовка CSV
-        csvfile = io.StringIO()
-        writer = csv.writer(csvfile, dialect='excel', delimiter=',')
+        if not orders:
+            await update.message.reply_text(f"Нет активных заказов за период {period_display}.")
+            return
         
-        # Первая строка
-        writer.writerow([f"Данные за {date_display}"] + [''] * 14)
-        
-        # Заголовки
-        headers = [
-            '', 'Клиент', 'Организация', 
-            'Классический', 'Миндальный', 'Заморозка/10шт', 'Пан-о-шоколя', 
-            'Ванильный', 'Шоколадный', 'Матча', 'Мини', 
-            'Улитка/Изюм', 'Улитка/Мак', 'Булка/Кардамон', 
-            'Комбо1', 'Комбо2'
-        ]
-        writer.writerow(headers)
-        
-        # Строки клиентов (сортировка по имени клиента)
-        sorted_users = sorted(user_orders.items(), key=lambda x: x[1]['contact'])
-        totals = [0] * 13
-        for user_id, data in sorted_users:
-            row = ['', data['contact'], data['org']] + data['quantities']
-            writer.writerow(row)
-            for i in range(13):
-                totals[i] += data['quantities'][i]
-        
-        # Итого
-        writer.writerow(['Итого', '', ''] + totals)
+        # Агрегация данных
+        if is_month:
+            # Группировка по дате и клиенту для месяца
+            date_user_orders = defaultdict(lambda: defaultdict(lambda: [0] * 13))
+            client_info = {}  # {user_id: (contact, org)}
+            
+            for order in orders:
+                order_data = order['order_data']  # Уже dict
+                user_id = order['user_id']
+                delivery_date = order['delivery_date']
+                if user_id not in client_info:
+                    client_info[user_id] = (order_data['contact_person'], order_data['organization'])
+                
+                quantities = date_user_orders[delivery_date][user_id]
+                for item in order_data['items']:
+                    prod_id = int(item['product']['id']) - 1
+                    if 0 <= prod_id < 13:
+                        quantities[prod_id] += item['quantity']
+            
+            # Подготовка CSV для месяца
+            csvfile = io.StringIO()
+            writer = csv.writer(csvfile, dialect='excel', delimiter=',')
+            
+            writer.writerow([period_display] + [''] * 14)
+            headers = [
+                'Дата', 'Клиент', 'Организация', 
+                'Классический', 'Миндальный', 'Заморозка/10шт', 'Пан-о-шоколя', 
+                'Ванильный', 'Шоколадный', 'Матча', 'Мини', 
+                'Улитка/Изюм', 'Улитка/Мак', 'Булка/Кардамон', 
+                'Комбо1', 'Комбо2'
+            ]
+            writer.writerow(headers)
+            
+            totals = [0] * 13
+            sorted_dates = sorted(date_user_orders.keys())  # Сортировка по датам
+            for date_str in sorted_dates:
+                user_data = date_user_orders[date_str]
+                sorted_users = sorted(user_data.keys())  # Сортировка по user_id или по имени, если нужно
+                for user_id in sorted_users:
+                    contact, org = client_info[user_id]
+                    quantities = user_data[user_id]
+                    date_dd_mm = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m")
+                    writer.writerow([date_dd_mm, contact, org] + quantities)
+                    for i in range(13):
+                        totals[i] += quantities[i]
+            
+            writer.writerow(['Итого', '', ''] + totals)
+        else:
+            # Логика для дня (как раньше)
+            user_orders = {}
+            for order in orders:
+                order_data = order['order_data']
+                user_id = order['user_id']
+                if user_id not in user_orders:
+                    user_orders[user_id] = {
+                        'contact': order_data['contact_person'],
+                        'org': order_data['organization'],
+                        'quantities': [0] * 13
+                    }
+                
+                for item in order_data['items']:
+                    prod_id = int(item['product']['id']) - 1
+                    if 0 <= prod_id < 13:
+                        user_orders[user_id]['quantities'][prod_id] += item['quantity']
+            
+            csvfile = io.StringIO()
+            writer = csv.writer(csvfile, dialect='excel', delimiter=',')
+            
+            writer.writerow([period_display] + [''] * 14)
+            headers = [
+                '', 'Клиент', 'Организация', 
+                'Классический', 'Миндальный', 'Заморозка/10шт', 'Пан-о-шоколя', 
+                'Ванильный', 'Шоколадный', 'Матча', 'Мини', 
+                'Улитка/Изюм', 'Улитка/Мак', 'Булка/Кардамон', 
+                'Комбо1', 'Комбо2'
+            ]
+            writer.writerow(headers)
+            
+            sorted_users = sorted(user_orders.items(), key=lambda x: x[1]['contact'])
+            totals = [0] * 13
+            for user_id, data in sorted_users:
+                row = ['', data['contact'], data['org']] + data['quantities']
+                writer.writerow(row)
+                for i in range(13):
+                    totals[i] += data['quantities'][i]
+            
+            writer.writerow(['Итого', '', ''] + totals)
         
         # Отправка файла
         csvfile.seek(0)
+        filename = f"orders_{start_date.replace('-', '')}_{end_date.replace('-', '')}.csv" if is_month else f"orders_{date_display}.csv"
         await update.message.reply_document(
-            document=InputFile(csvfile, filename=f"orders_{date_display}.csv"),
-            caption=None
+            document=InputFile(csvfile, filename=filename)
         )
     
     async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
