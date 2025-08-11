@@ -47,7 +47,7 @@ if ADMIN_CHAT_ID:
         logger.error(f"Ошибка парсинга ADMIN_CHAT_ID: {e}")
 
 # Состояния для ConversationHandler
-REGISTER_ORG, REGISTER_CONTACT = range(2)
+REGISTER_ORG, REGISTER_CONTACT, ENTER_QUANTITY = range(3)
 
 # Товары с фото (без цен)
 PRODUCTS = [
@@ -261,6 +261,7 @@ class BotHandlers:
         self.current_editing: Dict[int, int] = {}
         self.selected_dates: Dict[int, str] = {}
         self.last_orders: Dict[int, Dict[str, Any]] = {}
+        self.pending_product: Dict[int, Dict[str, Any]] = {}  # Хранит продукт, для которого вводится количество
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработчик команды /start"""
@@ -372,7 +373,47 @@ class BotHandlers:
         user_id = update.message.from_user.id
         logger.info(f"User {user_id} cancelled registration")
         context.user_data.clear()
+        self.pending_product.pop(user_id, None)
         await update.message.reply_text("Регистрация отменена. Начните заново с /start.")
+        return ConversationHandler.END
+    
+    async def enter_quantity(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Обработчик ввода количества товара"""
+        user_id = update.message.from_user.id
+        quantity_text = update.message.text.strip()
+        logger.info(f"enter_quantity called for user {user_id} with text '{quantity_text}'")
+        
+        try:
+            quantity = int(quantity_text)
+            if quantity <= 0:
+                await update.message.reply_text("Количество должно быть больше нуля. Пожалуйста, введите корректное количество:")
+                return ENTER_QUANTITY
+        except ValueError:
+            logger.info(f"Invalid quantity input '{quantity_text}' for user {user_id}")
+            await update.message.reply_text("Пожалуйста, введите число. Попробуйте снова:")
+            return ENTER_QUANTITY
+        
+        if user_id not in self.pending_product:
+            logger.error(f"No pending product for user {user_id}")
+            await update.message.reply_text("Ошибка: товар не выбран. Начните заново, выбрав товар из меню.")
+            return ConversationHandler.END
+        
+        product = self.pending_product[user_id]
+        if user_id not in self.user_carts:
+            self.user_carts[user_id] = {"items": []}
+        
+        cart = self.user_carts[user_id]["items"]
+        for item in cart:
+            if item["product"]["id"] == product["id"]:
+                item["quantity"] += quantity
+                break
+        else:
+            cart.append({"product": product, "quantity": quantity})
+        
+        self.current_editing[user_id] = len(cart) - 1
+        self.pending_product.pop(user_id, None)
+        
+        await self.show_cart(update, context, user_id)
         return ConversationHandler.END
     
     async def check_client_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,7 +448,7 @@ class BotHandlers:
         
         await update.inline_query.answer(results)
     
-    async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработчик сообщений с товарами"""
         user_id = update.message.from_user.id
         logger.info(f"handle_product_message called for user {user_id} with text '{update.message.text}' in chat {update.message.chat.type}")
@@ -417,27 +458,18 @@ class BotHandlers:
         if not organization:
             logger.info(f"User {user_id} is not registered, ignoring product message")
             await update.message.reply_text("Пожалуйста, завершите регистрацию с помощью команды /start")
-            return
+            return ConversationHandler.END
         
         message_text = update.message.text.strip()
         first_line = message_text.split('\n', 1)[0].strip()
         
         if (product := PRODUCTS_BY_TITLE.get(first_line)):
-            if user_id not in self.user_carts:
-                self.user_carts[user_id] = {"items": []}
-            
-            cart = self.user_carts[user_id]["items"]
-            for item in cart:
-                if item["product"]["id"] == product["id"]:
-                    item["quantity"] += 1
-                    break
-            else:
-                cart.append({"product": product, "quantity": 1})
-            
-            self.current_editing[user_id] = len(cart) - 1
-            await self.show_cart(update, context, user_id)
+            self.pending_product[user_id] = product
+            await update.message.reply_text(f"Вы выбрали: {product['title']}. Введите количество:")
+            return ENTER_QUANTITY
         else:
             await update.message.reply_text("Такой продукт не найден. Попробуйте снова.")
+            return ConversationHandler.END
     
     async def show_cart(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, edit_message: bool = False):
         """Показывает корзину пользователя"""
@@ -468,12 +500,8 @@ class BotHandlers:
         # Генерация клавиатуры
         buttons = []
         if cart:
-            editing_item = cart[editing_index]
             buttons.append([
                 InlineKeyboardButton("◀️", callback_data="prev_item"),
-                InlineKeyboardButton("-", callback_data="decrease"),
-                InlineKeyboardButton(str(editing_item["quantity"]), callback_data="quantity"),
-                InlineKeyboardButton("+", callback_data="increase"),
                 InlineKeyboardButton("▶️", callback_data="next_item"),
             ])
         
@@ -730,22 +758,6 @@ class BotHandlers:
                     if cart:
                         self.current_editing[user_id] = (self.current_editing[user_id] + 1) % len(cart)
                         await self.show_cart(update, context, user_id, edit_message=True)
-            
-            # Обработка изменения количества товара
-            elif data == "increase":
-                if user_id in self.current_editing:
-                    idx = self.current_editing[user_id]
-                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
-                        self.user_carts[user_id]["items"][idx]["quantity"] += 1
-                        await self.show_cart(update, context, user_id, edit_message=True)
-            
-            elif data == "decrease":
-                if user_id in self.current_editing:
-                    idx = self.current_editing[user_id]
-                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
-                        if self.user_carts[user_id]["items"][idx]["quantity"] > 1:
-                            self.user_carts[user_id]["items"][idx]["quantity"] -= 1
-                            await self.show_cart(update, context, user_id, edit_message=True)
             
             # Удаление товара из корзины
             elif data == "remove_item":
@@ -1094,12 +1106,16 @@ def main():
         # Регистрация CallbackQueryHandler для кнопок
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
-        # Регистрация ConversationHandler для регистрации
+        # Регистрация ConversationHandler для регистрации и ввода количества
         conv_handler = ConversationHandler(
-            entry_points=[CommandHandler("start", handlers.start)],
+            entry_points=[
+                CommandHandler("start", handlers.start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_product_message)
+            ],
             states={
                 REGISTER_ORG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_org)],
                 REGISTER_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.register_contact)],
+                ENTER_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.enter_quantity)],
             },
             fallbacks=[CommandHandler("cancel", handlers.cancel_registration)],
             persistent=False,
@@ -1112,12 +1128,6 @@ def main():
         application.add_handler(CommandHandler("stats", handlers.admin_stats))
         application.add_handler(CommandHandler("add_admin", handlers.add_admin))
         application.add_handler(CommandHandler("remove_admin", handlers.remove_admin))
-        
-        # Регистрация MessageHandler для товаров
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handlers.handle_product_message
-        ))
         
         # Регистрация обработчика ошибок
         application.add_error_handler(error_handler)
