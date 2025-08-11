@@ -1,8 +1,9 @@
 import os
 import logging
 import re
+import json
 from typing import Dict, Tuple, Any, Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -10,10 +11,14 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
-    ApplicationBuilder
+    ApplicationBuilder,
+    InlineQueryHandler,
+    CallbackQueryHandler
 )
 import psycopg2
 from psycopg2 import extras
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 # Настройка логгирования
 logging.basicConfig(
@@ -40,12 +45,51 @@ if ADMIN_CHAT_ID:
 # Состояния для ConversationHandler
 REGISTER_ORG, REGISTER_CONTACT = range(2)
 
-# Определение товаров
+# Товары с фото (без цен)
 PRODUCTS = [
-    {"id": 1, "title": "Классический круассан", "price": 100},
-    {"id": 2, "title": "Миндальный круассан", "price": 150}
+    {"id": "1", "title": "Классический круассан", "description": "75 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/1twHpy00/image.png"},
+    {"id": "2", "title": "Миндальный круассан", "description": "146 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/qMkL3VNn/image.jpg"},
+    {"id": "3", "title": "Круассан в заморозке", "description": "(Упаковка 10 шт.) 930 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/0N6ZyYbB/image.png"},
+    {"id": "4", "title": "Пан-о-шоколя", "description": "65 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/htv12Lbt/image.jpg"},
+    {"id": "5", "title": "Круассан ванильный крем", "description": "150 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/httpHWgg/image.jpg"},
+    {"id": "6", "title": "Круассан шоколадный крем", "description": "150 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/nhWYgX0Y/image.jpg"},
+    {"id": "7", "title": "Круассан матча крем", "description": "150 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/4x4DfnTH/image.jpg"},
+    {"id": "8", "title": "Мини круассан классический", "description": "40 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/CLm4CP82/image.jpg"},
+    {"id": "9", "title": "Улитка слоеная с изюмом", "description": "110 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/dVN4FHtC/image.jpg"},
+    {"id": "10", "title": "Улитка слоеная с маком", "description": "110 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/mZ3jk2gB/image.png"},
+    {"id": "11", "title": "Слоеная булочка с кардамоном", "description": "65 г", "photo_url": "", "thumb_url": "https://i.postimg.cc/XvTLGr57/image.png"},
+    {"id": "12", "title": "Комбо 1: Круассан классический + джем/масло", "description": "", "photo_url": "", "thumb_url": "https://i.postimg.cc/FzvxpwGM/1.png"},
+    {"id": "13", "title": "Комбо 2: круассан классический + джем + масло", "description": "", "photo_url": "", "thumb_url": "https://i.postimg.cc/T1cJ4Q4p/2.png"}
 ]
-PRODUCTS_BY_TITLE = {product["title"]: product for product in PRODUCTS}
+
+PRODUCTS_BY_TITLE = {p["title"]: p for p in PRODUCTS}
+
+# Интервалы доставки
+DELIVERY_TIME_INTERVALS = [
+    "6:00 - 8:00",
+    "6:30 - 8:30",
+    "7:00 - 9:00", 
+    "7:30 - 9:30", 
+    "8:00 - 10:00",
+    "8:30 - 10:30",
+    "9:00 - 11:00",
+    "9:30 - 11:30",
+    "10:00 - 12:00",
+    "10:30 - 12:30",
+]
+
+# Генерация дат доставки
+def generate_delivery_dates():
+    today = datetime.now()
+    dates = []
+    date_keys = []
+    
+    for i in range(1, 8):
+        delivery_date = today + timedelta(days=i)
+        dates.append(delivery_date.strftime("%d.%m"))
+        date_keys.append(f"delivery_date_{delivery_date.strftime('%Y-%m-%d')}")
+    
+    return dates, date_keys
 
 class Database:
     def __init__(self):
@@ -73,6 +117,9 @@ class Database:
                     order_id SERIAL PRIMARY KEY,
                     user_id BIGINT,
                     order_data JSONB,
+                    delivery_date TEXT,
+                    delivery_time TEXT,
+                    status TEXT DEFAULT 'active',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -112,6 +159,58 @@ class Database:
             logger.error(f"Error fetching all clients: {e}")
             return {}
     
+    def save_order(self, user_id: int, order_data: Dict[str, Any], delivery_date: str, delivery_time: str) -> int:
+        try:
+            self.cursor.execute('''
+                INSERT INTO orders (user_id, order_data, delivery_date, delivery_time)
+                VALUES (%s, %s, %s, %s)
+                RETURNING order_id
+            ''', (user_id, json.dumps(order_data), delivery_date, delivery_time))
+            order_id = self.cursor.fetchone()['order_id']
+            self.conn.commit()
+            return order_id
+        except Exception as e:
+            logger.error(f"Error saving order for user {user_id}: {e}")
+            self.conn.rollback()
+            raise
+    
+    def cancel_order(self, order_id: int) -> bool:
+        try:
+            self.cursor.execute('''
+                UPDATE orders 
+                SET status = 'cancelled' 
+                WHERE order_id = %s AND status = 'active'
+            ''', (order_id,))
+            rows_affected = self.cursor.rowcount
+            self.conn.commit()
+            return rows_affected > 0
+        except Exception as e:
+            logger.error(f"Error cancelling order {order_id}: {e}")
+            self.conn.rollback()
+            return False
+    
+    def get_active_order(self, user_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            self.cursor.execute('''
+                SELECT order_id, order_data, delivery_date, delivery_time 
+                FROM orders 
+                WHERE user_id = %s AND status = 'active'
+                ORDER BY created_at DESC 
+                LIMIT 1
+            ''', (user_id,))
+            result = self.cursor.fetchone()
+            if result:
+                return {
+                    'order_id': result['order_id'],
+                    'order_data': json.loads(result['order_data']),
+                    'delivery_date': result['delivery_date'],
+                    'delivery_time': result['delivery_time']
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting active order for user {user_id}: {e}")
+            return None
+    
     def close(self):
         self.cursor.close()
         self.conn.close()
@@ -122,6 +221,8 @@ class BotHandlers:
         self.db = Database()
         self.user_carts: Dict[int, Dict[str, Any]] = {}
         self.current_editing: Dict[int, int] = {}
+        self.selected_dates: Dict[int, str] = {}
+        self.last_orders: Dict[int, Dict[str, Any]] = {}
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработчик команды /start"""
@@ -184,7 +285,7 @@ class BotHandlers:
             logger.error(f"Error in register_org for user {user_id}: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла ошибка при обработке названия организации. "
-                "Пожалуйста, попробуйте снова или обратитесь в поддержку."
+                "Пожалуйста, попробуйте снова или обратитесь в поддержке."
             )
             return REGISTER_ORG
     
@@ -236,16 +337,26 @@ class BotHandlers:
         await update.message.reply_text("Регистрация отменена. Начните заново с /start.")
         return ConversationHandler.END
     
-    async def check_client_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /info"""
-        user_id = update.message.from_user.id
-        organization, contact_person = self.db.get_client(user_id)
-        if organization and contact_person:
-            await update.message.reply_text(
-                f"Ваши данные:\nОрганизация: {organization}\nКонтактное лицо: {contact_person}"
-            )
-        else:
-            await update.message.reply_text("Вы не зарегистрированы. Пожалуйста, используйте /start для регистрации.")
+    async def inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик inline-запросов для меню продуктов"""
+        query = update.inline_query.query
+        results = []
+        
+        for product in PRODUCTS:
+            if query.lower() in product["title"].lower():
+                results.append(
+                    InlineQueryResultArticle(
+                        id=product["id"],
+                        title=product["title"],
+                        description=product["description"],
+                        thumb_url=product["thumb_url"],
+                        input_message_content=InputTextMessageContent(
+                            f"{product['title']}\n{product['description']}"
+                        )
+                    )
+                )
+        
+        await update.inline_query.answer(results)
     
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
@@ -275,29 +386,431 @@ class BotHandlers:
                 cart.append({"product": product, "quantity": 1})
             
             self.current_editing[user_id] = len(cart) - 1
-            await self.show_cart(update, user_id)
+            await self.show_cart(update, context, user_id)
         else:
             await update.message.reply_text("Такой продукт не найден. Попробуйте снова.")
     
-    async def show_cart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать корзину пользователя"""
-        user_id = update.message.from_user.id
-        if user_id not in self.user_carts or not self.user_carts[user_id]["items"]:
-            await update.message.reply_text("Ваша корзина пуста.")
+    async def show_cart(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, edit_message: bool = False):
+        """Показывает корзину пользователя"""
+        if not self.user_carts.get(user_id, {}).get("items"):
+            text = "Ваша корзина пуста!"
+            if edit_message:
+                await update.callback_query.edit_message_text(text=text)
+            else:
+                await update.message.reply_text(text)
             return
         
         cart = self.user_carts[user_id]["items"]
-        cart_text = "Ваша корзина:\n"
-        total = 0
-        for idx, item in enumerate(cart):
-            product = item["product"]
-            quantity = item["quantity"]
-            item_total = product["price"] * quantity
-            total += item_total
-            cart_text += f"{idx + 1}. {product['title']} - {quantity} шт. - {item_total} руб.\n"
+        editing_index = self.current_editing.get(user_id, 0)
+        items_text = []
         
-        cart_text += f"\nИтого: {total} руб."
-        await update.message.reply_text(cart_text)
+        for idx, item in enumerate(cart):
+            p = item["product"]
+            qty = item["quantity"]
+            prefix = "➡️ " if idx == editing_index else "▪️ "
+            items_text.append(
+                f"{prefix}{p['title']}\n"
+                f"Описание: {p['description']}\n"
+                f"Количество: {qty}"
+            )
+        
+        response = "🛒 Ваша корзина:\n\n" + "\n\n".join(items_text)
+        
+        # Генерация клавиатуры
+        buttons = []
+        if cart:
+            editing_item = cart[editing_index]
+            buttons.append([
+                InlineKeyboardButton("◀️", callback_data="prev_item"),
+                InlineKeyboardButton("-", callback_data="decrease"),
+                InlineKeyboardButton(str(editing_item["quantity"]), callback_data="quantity"),
+                InlineKeyboardButton("+", callback_data="increase"),
+                InlineKeyboardButton("▶️", callback_data="next_item"),
+            ])
+        
+        buttons.extend([
+            [
+                InlineKeyboardButton("❌ Удалить", callback_data="remove_item"),
+                InlineKeyboardButton("🚚 Доставка", callback_data="select_delivery_date")
+            ],
+            [
+                InlineKeyboardButton("➕ Добавить еще", switch_inline_query_current_chat=""),
+                InlineKeyboardButton("👨‍💼 Менеджер", url="https://t.me/Krash_order_Bot")
+            ]
+        ])
+        
+        if edit_message:
+            await update.callback_query.edit_message_text(
+                text=response,
+                reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await update.message.reply_text(
+                response,
+                reply_markup=InlineKeyboardMarkup(buttons))
+    
+    async def show_delivery_dates(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает доступные даты доставки"""
+        user_id = update.callback_query.from_user.id
+        DELIVERY_DATES, DATE_KEYS = generate_delivery_dates()
+        keyboard = [
+            [InlineKeyboardButton(DELIVERY_DATES[i], callback_data=DATE_KEYS[i]) 
+             for i in range(0, 7, 3)],
+            [InlineKeyboardButton(DELIVERY_DATES[i], callback_data=DATE_KEYS[i]) 
+             for i in range(1, 7, 3)],
+            [InlineKeyboardButton(DELIVERY_DATES[i], callback_data=DATE_KEYS[i]) 
+             for i in range(2, 7, 3)],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_cart")]
+        ]
+        await update.callback_query.edit_message_text(
+            text="📅 Выберите дату доставки:\n\nДоступные даты на ближайшую неделю:",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def show_delivery_times(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает доступные интервалы доставки"""
+        user_id = update.callback_query.from_user.id
+        keyboard = [
+            [InlineKeyboardButton(interval, callback_data=f"delivery_time_{interval}") 
+             for interval in DELIVERY_TIME_INTERVALS[i:i+2]]
+            for i in range(0, len(DELIVERY_TIME_INTERVALS), 2)
+        ]
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_dates")])
+        
+        await update.callback_query.edit_message_text(
+            text="🕒 Выберите интервал доставки:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    async def process_delivery_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает выбор времени доставки и оформляет заказ"""
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        user_id = user.id
+        time_str = query.data.split("_", 2)[-1]
+        date_str = self.selected_dates.get(user_id)
+        
+        if not date_str:
+            await query.answer("Ошибка: дата не выбрана")
+            return
+        
+        # Проверка регистрации (хотя уже должна быть)
+        organization, contact_person = self.db.get_client(user.id)
+        if not organization:
+            await query.edit_message_text(
+                "Перед оформлением заказа необходимо зарегистрироваться!"
+            )
+            return
+        
+        # Формирование информации о заказе
+        cart = self.user_carts.get(user_id, {}).get("items", [])
+        if not cart:
+            await query.edit_message_text("Ваша корзина пуста!")
+            return
+            
+        order_lines = []
+        
+        for item in cart:
+            p = item["product"]
+            qty = item["quantity"]
+            order_lines.append(f"▪️ {p['title']} - {qty} шт.")
+        
+        delivery_date = datetime.strptime(date_str, "%Y-%m-%d")
+        start_time_str = time_str.split(" - ")[0]
+        delivery_datetime = datetime.strptime(f"{date_str} {start_time_str}", "%Y-%m-%d %H:%M")
+        
+        delivery_info = (
+            f"\n📅 Дата доставки: {delivery_date.strftime('%d.%m.%Y')}\n"
+            f"🕒 Время доставки: {time_str}\n"
+        )
+        
+        order_text = "✅ Ваш заказ оформлен!\n\n" + "\n".join(order_lines) + delivery_info
+
+        # Сохраняем заказ в базу данных
+        order_data = {
+            "items": [{
+                "product": item["product"],
+                "quantity": item["quantity"]
+            } for item in cart],
+            "organization": organization,
+            "contact_person": contact_person,
+            "username": user.username
+        }
+        
+        try:
+            order_id = self.db.save_order(
+                user_id=user_id,
+                order_data=order_data,
+                delivery_date=date_str,
+                delivery_time=time_str
+            )
+            logger.info(f"Order #{order_id} saved successfully for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error saving order: {e}")
+            await query.edit_message_text(
+                "Произошла ошибка при сохранении заказа. Пожалуйста, попробуйте позже."
+            )
+            return
+        
+        # Сохраняем заказ для возможной отмены
+        self.last_orders[user_id] = {
+            "order_id": order_id,
+            "order_text": order_text,
+            "delivery_datetime": delivery_datetime
+        }
+        
+        # Добавляем кнопку отмены заказа
+        keyboard = [
+            [InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_last_order")],
+            [InlineKeyboardButton("👨‍💼 Связаться с менеджером", url="https://t.me/Krash_order_Bot")]
+        ]
+        
+        # Проверяем, осталось ли до доставки больше 6 часов
+        time_left = delivery_datetime - datetime.now()
+        if time_left <= timedelta(hours=6):
+            order_text += "\n\n⚠️ Отмена заказа возможна не позднее чем за 6 часов до доставки. Сейчас отменить заказ уже нельзя."
+            keyboard = [[InlineKeyboardButton("👨‍💼 Связаться с менеджером", url="https://t.me/Krash_order_Bot")]]
+        
+        await query.edit_message_text(
+            text=order_text + "\nДля уточнения деталей с вами свяжется менеджер.",
+            reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Уведомление в группу
+        if ADMIN_IDS:
+            admin_message = (
+                f"=== НОВЫЙ ЗАКАЗ ===\n\n"
+                f"🏢 Организация: {organization}\n"
+                f"👤 Контакт: {contact_person}\n"
+                f"📱 Телеграм: @{user.username if user.username else 'не указан'}\n"
+                f"📅 Доставка: {delivery_date.strftime('%d.%m.%Y')} {time_str}\n"
+                f"🆔 Номер заказа: {order_id}\n\n"
+                "Состав заказа:\n" + "\n".join(order_lines)
+            )
+            
+            for admin_id in ADMIN_IDS:
+                try:
+                    kb = [[InlineKeyboardButton("📨 Написать клиенту", url=f"https://t.me/{user.username}")]] if user.username else None
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_message,
+                        reply_markup=InlineKeyboardMarkup(kb) if kb else None,
+                        disable_notification=True
+                    )
+                    logger.info(f"Уведомление отправлено в чат {admin_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки в чат {admin_id}: {e}")
+        else:
+            logger.error("Не удалось отправить уведомление: ADMIN_IDS пуст!")
+        
+        # Очистка данных
+        self.user_carts[user_id] = {"items": []}
+        self.selected_dates.pop(user_id, None)
+    
+    async def cancel_last_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает отмену заказа"""
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        
+        if user_id not in self.last_orders:
+            await query.edit_message_text(text="У вас нет активных заказов для отмены.")
+            return
+        
+        order_data = self.last_orders[user_id]
+        delivery_datetime = order_data["delivery_datetime"]
+        time_left = delivery_datetime - datetime.now()
+        
+        if time_left <= timedelta(hours=6):
+            order_text = "\n".join(order_data["order_text"].split("\n")[1:])
+            await query.edit_message_text(
+                text="⚠️ Отмена заказа возможна не позднее чем за 6 часов до доставки. Сейчас отменить заказ уже нельзя.\n\n" + 
+                     order_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👨‍💼 Связаться с менеджером", url="https://t.me/Krash_order_Bot")]
+                ])
+            )
+            return
+        
+        # Отменяем заказ в базе данных
+        if not self.db.cancel_order(order_data["order_id"]):
+            await query.edit_message_text(text="Не удалось отменить заказ. Пожалуйста, свяжитесь с менеджером.")
+            return
+        
+        # Уведомляем администратора об отмене
+        if "admin_message_id" in order_data:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_IDS[0],
+                    text=f"⚠️ ЗАКАЗ ОТМЕНЕН ⚠️\n\n"
+                         f"Заказ №{order_data['order_id']} был отменен клиентом.\n"
+                         f"Оригинальное сообщение:\n\n{order_data['order_text']}",
+                    reply_to_message_id=order_data["admin_message_id"]
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления об отмене: {e}")
+
+        # Обновляем сообщение для пользователя
+        await query.edit_message_text(
+            text="❌ Ваш заказ был отменен.\n\n" + order_data["order_text"],
+            reply_markup=None
+        )
+        
+        # Удаляем информацию о заказе
+        del self.last_orders[user_id]
+    
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик callback запросов"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        data = query.data
+        
+        try:
+            # Обработка навигации по товарам в корзине
+            if data == "prev_item":
+                if user_id in self.current_editing:
+                    cart = self.user_carts.get(user_id, {}).get("items", [])
+                    if cart:
+                        self.current_editing[user_id] = (self.current_editing[user_id] - 1) % len(cart)
+                        await self.show_cart(update, context, user_id, edit_message=True)
+            
+            elif data == "next_item":
+                if user_id in self.current_editing:
+                    cart = self.user_carts.get(user_id, {}).get("items", [])
+                    if cart:
+                        self.current_editing[user_id] = (self.current_editing[user_id] + 1) % len(cart)
+                        await self.show_cart(update, context, user_id, edit_message=True)
+            
+            # Обработка изменения количества товара
+            elif data == "increase":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        self.user_carts[user_id]["items"][idx]["quantity"] += 1
+                        await self.show_cart(update, context, user_id, edit_message=True)
+            
+            elif data == "decrease":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        if self.user_carts[user_id]["items"][idx]["quantity"] > 1:
+                            self.user_carts[user_id]["items"][idx]["quantity"] -= 1
+                            await self.show_cart(update, context, user_id, edit_message=True)
+            
+            # Удаление товара из корзины
+            elif data == "remove_item":
+                if user_id in self.current_editing:
+                    idx = self.current_editing[user_id]
+                    if user_id in self.user_carts and idx < len(self.user_carts[user_id]["items"]):
+                        del self.user_carts[user_id]["items"][idx]
+                        
+                        # Обновляем индекс редактирования
+                        if self.user_carts[user_id]["items"]:
+                            self.current_editing[user_id] = min(idx, len(self.user_carts[user_id]["items"]) - 1)
+                        else:
+                            del self.current_editing[user_id]
+                        
+                        await self.show_cart(update, context, user_id, edit_message=True)
+            
+            # Выбор даты доставки
+            elif data == "select_delivery_date":
+                await self.show_delivery_dates(update, context)
+            
+            # Возврат в корзину
+            elif data == "back_to_cart":
+                await self.show_cart(update, context, user_id, edit_message=True)
+            
+            # Возврат к выбору даты
+            elif data == "back_to_dates":
+                await self.show_delivery_dates(update, context)
+            
+            # Обработка выбора даты доставки
+            elif data.startswith("delivery_date_"):
+                date_str = data.split("_", 2)[-1]
+                self.selected_dates[user_id] = date_str
+                await self.show_delivery_times(update, context)
+            
+            # Обработка выбора времени доставки
+            elif data.startswith("delivery_time_"):
+                await self.process_delivery_time(update, context)
+            
+            # Отмена последнего заказа
+            elif data == "cancel_last_order":
+                await self.cancel_last_order(update, context)
+            
+            # Просмотр активных заказов
+            elif data == "my_orders":
+                await self.show_active_orders(update, context)
+            
+            # Открытие каталога
+            elif data == "catalog":
+                await query.edit_message_text(
+                    text="Меню товаров:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                        "Открыть меню", switch_inline_query_current_chat=""
+                    )]])
+                )
+            
+            # Информация о боте
+            elif data == "about":
+                await query.edit_message_text(
+                    text="ℹ️ О нас:\n\nМы доставляем свежие круассаны и выпечку каждое утро!\n\n"
+                         "Работаем с 6:00 до 13:00\n"
+                         "По вопросам сотрудничества: @Krash_order_Bot",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]])
+                )
+            
+            # Возврат в главное меню
+            elif data == "back_to_menu":
+                await self._show_main_menu(update)
+        
+        except Exception as e:
+            logger.error(f"Error in callback handler: {e}")
+            await query.edit_message_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+    
+    async def show_active_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает активные заказы пользователя"""
+        query = update.callback_query
+        user_id = query.from_user.id
+        order = self.db.get_active_order(user_id)
+        
+        if not order:
+            await query.edit_message_text(
+                text="У вас нет активных заказов.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]])
+            )
+            return
+        
+        order_lines = []
+        for item in order["order_data"]["items"]:
+            p = item["product"]
+            qty = item["quantity"]
+            order_lines.append(f"▪️ {p['title']} - {qty} шт.")
+        
+        order_text = (
+            "📦 Ваш активный заказ:\n\n" +
+            "\n".join(order_lines) +
+            f"\n\n📅 Дата доставки: {order['delivery_date']}" +
+            f"\n🕒 Время доставки: {order['delivery_time']}"
+        )
+        
+        keyboard = []
+        delivery_datetime = datetime.strptime(
+            f"{order['delivery_date']} {order['delivery_time'].split(' - ')[0]}",
+            "%Y-%m-%d %H:%M"
+        )
+        time_left = delivery_datetime - datetime.now()
+        
+        if time_left > timedelta(hours=6):
+            keyboard.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_order_{order['order_id']}")])
+        
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")])
+        
+        await query.edit_message_text(
+            text=order_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     
     async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /stats для админов"""
@@ -358,6 +871,12 @@ def main():
         application = ApplicationBuilder().token(TOKEN).build()
         handlers = BotHandlers()
         
+        # Регистрация InlineQueryHandler для меню
+        application.add_handler(InlineQueryHandler(handlers.inline_query))
+        
+        # Регистрация CallbackQueryHandler для кнопок
+        application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
+        
         # Регистрация ConversationHandler для регистрации
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
@@ -379,9 +898,8 @@ def main():
         
         # Регистрация MessageHandler для товаров
         application.add_handler(MessageHandler(
-            filters=filters.TEXT & ~filters.COMMAND,
-            callback=handlers.handle_product_message,
-            block=False
+            filters.TEXT & ~filters.COMMAND,
+            handlers.handle_product_message
         ))
         
         # Запуск бота
