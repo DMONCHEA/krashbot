@@ -423,6 +423,7 @@ class BotHandlers:
             
             logger.info(f"User {user.id} not registered, entering REGISTER_ORG state")
             context.user_data['__state__'] = REGISTER_ORG  # Явно устанавливаем для отладки
+            logger.info(f"Set state to REGISTER_ORG for user {user.id}, user_data: {context.user_data}")
             await update.message.reply_text(
                 "Добро пожаловать! Для начала работы необходимо зарегистрироваться. "
                 "Пожалуйста, введите название вашей организации:"
@@ -1161,20 +1162,13 @@ def main():
         )
         application.add_handler(conv_handler)
         
-        # Регистрация MessageHandler для товаров
-        application.add_handler(MessageHandler(
-            filters=filters.TEXT & ~filters.COMMAND & 
-                   ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
-            callback=handlers.handle_product_message,
-            block=False
-        ))
-        
-        # Добавляем обработчик для отладки всех текстовых сообщений
-        application.add_handler(MessageHandler(
-            filters=filters.TEXT & ~filters.COMMAND,
-            callback=handlers.debug_message,
-            block=False
-        ))
+        # # Регистрация MessageHandler для товаров
+        # application.add_handler(MessageHandler(
+        #     filters=filters.TEXT & ~filters.COMMAND & 
+        #            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
+        #     callback=handlers.handle_product_message,
+        #     block=False
+        # ))
         
         # Запуск бота
         logger.info("Бот запущен")
