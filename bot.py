@@ -891,12 +891,12 @@ class BotHandlers:
         
         # Запрос заказов за период
         try:
-            self.cursor.execute("""
+            self.db.cursor.execute("""
                 SELECT order_id, user_id, order_data, delivery_date, delivery_time 
                 FROM orders 
                 WHERE delivery_date BETWEEN %s AND %s AND status = 'active'
             """, (start_date, end_date))
-            orders = self.cursor.fetchall()
+            orders = self.db.cursor.fetchall()
         except Exception as e:
             logger.error(f"Error fetching orders for period {start_date} to {end_date}: {e}")
             await update.message.reply_text("Ошибка при получении данных. Попробуйте позже.")
