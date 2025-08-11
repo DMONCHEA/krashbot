@@ -867,7 +867,7 @@ class BotHandlers:
         # Агрегация по пользователям (остальной код без изменений)
         user_orders = {}
         for order in orders:
-            order_data = json.loads(order['order_data'])
+            order_data = order['order_data']
             user_id = order['user_id']
             if user_id not in user_orders:
                 user_orders[user_id] = {
@@ -974,6 +974,12 @@ class BotHandlers:
             ])
         )
 
+# Определение обработчика ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update.message:
+        await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже или свяжитесь с поддержкой.")
+
 def main():
     """Запуск бота"""
     try:
@@ -1010,6 +1016,9 @@ def main():
             filters.TEXT & ~filters.COMMAND,
             handlers.handle_product_message
         ))
+        
+        # Регистрация обработчика ошибок
+        application.add_error_handler(error_handler)
         
         # Запуск бота
         logger.info("Бот запущен")
