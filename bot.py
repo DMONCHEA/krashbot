@@ -212,6 +212,18 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting active order for user {user_id}: {e}")
             return None
+        
+    def get_orders_for_date(self, date_str: str) -> list:
+        try:
+            self.cursor.execute("""
+                SELECT order_id, user_id, order_data, delivery_date, delivery_time 
+                FROM orders 
+                WHERE delivery_date = %s AND status = 'active'
+            """, (date_str,))
+            return self.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error fetching orders for date {date_str}: {e}")
+            return []
     
     def close(self):
         self.cursor.close()
@@ -832,9 +844,67 @@ class BotHandlers:
             await update.message.reply_text("Эта команда доступна только администраторам.")
             return
         
-        clients = self.db.get_all_clients()
-        client_count = len(clients)
-        await update.message.reply_text(f"Количество зарегистрированных клиентов: {client_count}")
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_display = datetime.now().strftime("%d.%m")
+        
+        orders = self.db.get_orders_for_date(today)
+        
+        # Агрегация по пользователям
+        user_orders = {}
+        for order in orders:
+            order_data = json.loads(order['order_data'])
+            user_id = order['user_id']
+            if user_id not in user_orders:
+                user_orders[user_id] = {
+                    'contact': order_data['contact_person'],
+                    'org': order_data['organization'],
+                    'quantities': [0] * 13  # Для продуктов 1-13
+                }
+            
+            for item in order_data['items']:
+                prod_id = int(item['product']['id']) - 1  # 0-12 index
+                if 0 <= prod_id < 13:
+                    user_orders[user_id]['quantities'][prod_id] += item['quantity']
+        
+        if not user_orders:
+            await update.message.reply_text("Нет активных заказов на сегодня.")
+            return
+        
+        # Подготовка CSV
+        csvfile = io.StringIO()
+        writer = csv.writer(csvfile, dialect='excel', delimiter=',')
+        
+        # Первая строка
+        writer.writerow([f"Данные за {today_display}"] + [''] * 14)
+        
+        # Заголовки
+        headers = [
+            '', 'Клиент', 'Организация', 
+            'Классический', 'Миндальный', 'Заморозка/10шт', 'Пан-о-шоколя', 
+            'Ванильный', 'Шоколадный', 'Матча', 'Мини', 
+            'Улитка/Изюм', 'Улитка/Мак', 'Булка/Кардамон', 
+            'Комбо1', 'Комбо2'
+        ]
+        writer.writerow(headers)
+        
+        # Строки клиентов (сортировка по имени клиента)
+        sorted_users = sorted(user_orders.items(), key=lambda x: x[1]['contact'])
+        totals = [0] * 13
+        for user_id, data in sorted_users:
+            row = ['', data['contact'], data['org']] + data['quantities']
+            writer.writerow(row)
+            for i in range(13):
+                totals[i] += data['quantities'][i]
+        
+        # Итого
+        writer.writerow(['Итого', '', ''] + totals)
+        
+        # Отправка файла
+        csvfile.seek(0)
+        await update.message.reply_document(
+            document=InputFile(csvfile, filename=f"orders_{today_display}.csv"),
+            caption=None
+        )
     
     async def add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /add_admin"""
