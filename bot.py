@@ -844,12 +844,27 @@ class BotHandlers:
             await update.message.reply_text("Эта команда доступна только администраторам.")
             return
         
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_display = datetime.now().strftime("%d.%m")
+        # Определение даты: аргумент команды или завтра по умолчанию
+        if context.args:
+            date_input = context.args[0].strip()
+            try:
+                # Парсим формат DD.MM
+                day, month = map(int, date_input.split('.'))
+                year = datetime.now().year
+                target_date = datetime(year, month, day)
+            except ValueError:
+                await update.message.reply_text("Некорректный формат даты. Используйте DD.MM, например: /stats 12.08")
+                return
+        else:
+            # По умолчанию завтра
+            target_date = datetime.now() + timedelta(days=1)
         
-        orders = self.db.get_orders_for_date(today)
+        date_str = target_date.strftime("%Y-%m-%d")
+        date_display = target_date.strftime("%d.%m")
         
-        # Агрегация по пользователям
+        orders = self.db.get_orders_for_date(date_str)
+        
+        # Агрегация по пользователям (остальной код без изменений)
         user_orders = {}
         for order in orders:
             order_data = json.loads(order['order_data'])
@@ -867,7 +882,7 @@ class BotHandlers:
                     user_orders[user_id]['quantities'][prod_id] += item['quantity']
         
         if not user_orders:
-            await update.message.reply_text("Нет активных заказов на сегодня.")
+            await update.message.reply_text(f"Нет активных заказов на {date_display}.")
             return
         
         # Подготовка CSV
@@ -875,7 +890,7 @@ class BotHandlers:
         writer = csv.writer(csvfile, dialect='excel', delimiter=',')
         
         # Первая строка
-        writer.writerow([f"Данные за {today_display}"] + [''] * 14)
+        writer.writerow([f"Данные за {date_display}"] + [''] * 14)
         
         # Заголовки
         headers = [
@@ -902,7 +917,7 @@ class BotHandlers:
         # Отправка файла
         csvfile.seek(0)
         await update.message.reply_document(
-            document=InputFile(csvfile, filename=f"orders_{today_display}.csv"),
+            document=InputFile(csvfile, filename=f"orders_{date_display}.csv"),
             caption=None
         )
     
