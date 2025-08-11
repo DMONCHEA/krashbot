@@ -23,13 +23,6 @@ from telegram.ext import (
     PicklePersistence  # Added for persistence
 )
 
-from telegram.ext import BaseFilter
-
-class NotInConversationFilter(BaseFilter):
-    def filter(self, update):
-        # Проверяем, что пользователь не в состоянии ConversationHandler
-        return not update._effective_user.get_user_data().get('__state__')
-
 # Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -434,17 +427,22 @@ class BotHandlers:
         """Обработчик ввода организации"""
         try:
             org = update.message.text.strip()
+            logger.info(f"User {update.message.from_user.id} entered organization: '{org}'")
             if not org:
+                logger.info("Organization name is empty")
                 await update.message.reply_text("Название организации не может быть пустым. Попробуйте снова:")
                 return REGISTER_ORG
+            # Проверка регулярного выражения (если добавлена)
             if not re.match(r'^[А-Яа-яA-Za-z\s-]+$', org):
+                logger.info(f"Organization name '{org}' does not match regex")
                 await update.message.reply_text("Название организации должно содержать только буквы, пробелы или дефисы. Попробуйте снова:")
                 return REGISTER_ORG
             context.user_data['organization'] = org
+            logger.info(f"Organization '{org}' saved, moving to REGISTER_CONTACT")
             await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
             return REGISTER_CONTACT
         except Exception as e:
-            logger.error(f"Error in register_org: {str(e)}", exc_info=True)
+            logger.error(f"Error in register_org for user {update.message.from_user.id}: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла ошибка при обработке названия организации. "
                 "Пожалуйста, попробуйте снова или обратитесь в поддержку."
@@ -572,13 +570,14 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
-        logger.info(f"handle_product_message called for user {update.message.from_user.id} in chat {update.message.chat.type}")
+        logger.info(f"handle_product_message called for user {update.message.from_user.id} with text '{update.message.text}' in chat {update.message.chat.type}")
 
+    # Проверяем, находится ли пользователь в состоянии регистрации
         if context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
-            logger.info("Skipping product message due to registration state")
+            logger.info(f"Skipping product message for user {update.message.from_user.id} due to registration state")
             return
-        
-        # Проверяем, зарегистрирован ли пользователь
+
+    # Проверяем, зарегистрирован ли пользователь
         user_id = update.message.from_user.id
         organization, contact_person = self.db.get_client(user_id)
         if not organization:
@@ -588,7 +587,7 @@ class BotHandlers:
 
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
-        
+
         if (product := PRODUCTS_BY_TITLE.get(first_line)):
             user_id = update.message.from_user.id
             
@@ -1150,7 +1149,7 @@ def main():
         # Регистрация обработчика сообщений с товарами (ПОСЛЕ ConversationHandler)
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)') & NotInConversationFilter(),
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)'),
             handlers.handle_product_message
         ))
         
