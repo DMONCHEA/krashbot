@@ -438,7 +438,7 @@ class BotHandlers:
         try:
             user_id = update.message.from_user.id
             org = update.message.text.strip()
-            logger.info(f"User {user_id} entered organization: '{org}'")
+            logger.info(f"register_org called for user {user_id} with text '{org}' in state {context.user_data.get('__state__')}")
             
             if not org:
                 logger.info(f"Organization name is empty for user {user_id}")
@@ -586,6 +586,11 @@ class BotHandlers:
         """Обработчик сообщений с товарами"""
         user_id = update.message.from_user.id
         logger.info(f"handle_product_message called for user {user_id} with text '{update.message.text}' in chat {update.message.chat.type}")
+
+    async def debug_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик для отладки всех текстовых сообщений"""
+        user_id = update.message.from_user.id
+        logger.info(f"Debug: Received text message from user {user_id}: '{update.message.text}' in state {context.user_data.get('__state__')}")    
         
         # Проверяем, находится ли пользователь в состоянии регистрации
         if context.user_data.get('__state__'):
@@ -1143,7 +1148,7 @@ def main():
         # Регистрация обработчика callback запросов
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
-        # Регистрация обработчика регистрации
+        # Регистрация ConversationHandler для регистрации
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
             states={
@@ -1156,11 +1161,18 @@ def main():
         )
         application.add_handler(conv_handler)
         
-        # Регистрация обработчика сообщений с товарами
+        # Регистрация MessageHandler для товаров
         application.add_handler(MessageHandler(
             filters=filters.TEXT & ~filters.COMMAND & 
                    ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
             callback=handlers.handle_product_message,
+            block=False
+        ))
+        
+        # Добавляем обработчик для отладки всех текстовых сообщений
+        application.add_handler(MessageHandler(
+            filters=filters.TEXT & ~filters.COMMAND,
+            callback=handlers.debug_message,
             block=False
         ))
         
