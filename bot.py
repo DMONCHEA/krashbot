@@ -398,51 +398,65 @@ class BotHandlers:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
-        context.user_data.clear()
-        
         try:
-            user = update.message.from_user
-            organization, contact_person = self.db.get_client(user.id)
+            user = update.effective_user
+            logger.info(f"Processing /start for user {user.id} in chat {update.message.chat.type}")
             
-            if organization:
+            if update.message.chat.type != 'private':
+                logger.info(f"User {user.id} attempted registration in non-private chat")
+                await update.message.reply_text("Регистрация доступна только в приватном чате с ботом.")
+                return ConversationHandler.END
+            
+            context.user_data.clear()
+            logger.info(f"Cleared user_data for user {user.id}")
+            
+            organization, contact_person = self.db.get_client(user.id)
+            if organization and contact_person:
+                logger.info(f"User {user.id} already registered: {organization}, {contact_person}")
                 await update.message.reply_text(
                     "Меню товаров:",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("Открыть меню", switch_inline_query_current_chat="")
-                    ]])
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Открыть меню", switch_inline_query_current_chat="")]
+                    ])
                 )
                 return ConversationHandler.END
-            else:
-                await update.message.reply_text(
-                    "Добро пожаловать! Для начала работы необходимо зарегистрироваться.\n"
-                    "Пожалуйста, введите название вашей организации:"
-                )
-                return REGISTER_ORG
+            
+            logger.info(f"User {user.id} not registered, entering REGISTER_ORG state")
+            context.user_data['__state__'] = REGISTER_ORG  # Явно устанавливаем для отладки
+            await update.message.reply_text(
+                "Добро пожаловать! Для начала работы необходимо зарегистрироваться. "
+                "Пожалуйста, введите название вашей организации:"
+            )
+            return REGISTER_ORG
         except Exception as e:
-            logger.error(f"Error in start: {e}")
+            logger.error(f"Error in start for user {user.id}: {str(e)}", exc_info=True)
             await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
             return ConversationHandler.END
 
     async def register_org(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик ввода организации"""
         try:
+            user_id = update.message.from_user.id
             org = update.message.text.strip()
-            logger.info(f"User {update.message.from_user.id} entered organization: '{org}'")
+            logger.info(f"User {user_id} entered organization: '{org}'")
+            
             if not org:
-                logger.info("Organization name is empty")
+                logger.info(f"Organization name is empty for user {user_id}")
                 await update.message.reply_text("Название организации не может быть пустым. Попробуйте снова:")
                 return REGISTER_ORG
-            # Проверка регулярного выражения (если добавлена)
+            
+            # Проверка регулярного выражения
             if not re.match(r'^[А-Яа-яA-Za-z\s-]+$', org):
-                logger.info(f"Organization name '{org}' does not match regex")
+                logger.info(f"Organization name '{org}' does not match regex for user {user_id}")
                 await update.message.reply_text("Название организации должно содержать только буквы, пробелы или дефисы. Попробуйте снова:")
                 return REGISTER_ORG
+            
             context.user_data['organization'] = org
-            logger.info(f"Organization '{org}' saved, moving to REGISTER_CONTACT")
+            logger.info(f"Organization '{org}' saved for user {user_id}, moving to REGISTER_CONTACT")
             await update.message.reply_text("Теперь введите ваше контактное лицо (ФИО):")
             return REGISTER_CONTACT
         except Exception as e:
-            logger.error(f"Error in register_org for user {update.message.from_user.id}: {str(e)}", exc_info=True)
+            logger.error(f"Error in register_org for user {user_id}: {str(e)}", exc_info=True)
             await update.message.reply_text(
                 "Произошла ошибка при обработке названия организации. "
                 "Пожалуйста, попробуйте снова или обратитесь в поддержку."
@@ -574,8 +588,8 @@ class BotHandlers:
         logger.info(f"handle_product_message called for user {user_id} with text '{update.message.text}' in chat {update.message.chat.type}")
         
         # Проверяем, находится ли пользователь в состоянии регистрации
-        if context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
-            logger.info(f"Skipping product message for user {user_id} due to registration state")
+        if context.user_data.get('__state__'):
+            logger.info(f"Skipping product message for user {user_id} due to conversation state: {context.user_data.get('__state__')}")
             return
         
         # Проверяем, зарегистрирован ли пользователь
@@ -1144,9 +1158,10 @@ def main():
         
         # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
-            handlers.handle_product_message
+            filters=filters.TEXT & ~filters.COMMAND & 
+                   ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
+            callback=handlers.handle_product_message,
+            block=False
         ))
         
         # Запуск бота
