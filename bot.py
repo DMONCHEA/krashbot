@@ -570,15 +570,15 @@ class BotHandlers:
 
     async def handle_product_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик сообщений с товарами"""
-        logger.info(f"handle_product_message called for user {update.message.from_user.id} with text '{update.message.text}' in chat {update.message.chat.type}")
-
-    # Проверяем, находится ли пользователь в состоянии регистрации
-        if context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
-            logger.info(f"Skipping product message for user {update.message.from_user.id} due to registration state")
-            return
-
-    # Проверяем, зарегистрирован ли пользователь
         user_id = update.message.from_user.id
+        logger.info(f"handle_product_message called for user {user_id} with text '{update.message.text}' in chat {update.message.chat.type}")
+        
+        # Проверяем, находится ли пользователь в состоянии регистрации
+        if context.user_data.get('__state__') in [REGISTER_ORG, REGISTER_CONTACT]:
+            logger.info(f"Skipping product message for user {user_id} due to registration state")
+            return
+        
+        # Проверяем, зарегистрирован ли пользователь
         organization, contact_person = self.db.get_client(user_id)
         if not organization:
             logger.info(f"User {user_id} is not registered, ignoring product message")
@@ -587,10 +587,8 @@ class BotHandlers:
 
         message_text = update.message.text
         first_line = message_text.split('\n', 1)[0].strip()
-
+        
         if (product := PRODUCTS_BY_TITLE.get(first_line)):
-            user_id = update.message.from_user.id
-            
             if user_id not in self.user_carts:
                 self.user_carts[user_id] = {"items": []}
             
@@ -1115,8 +1113,6 @@ class BotHandlers:
 def main():
     """Запуск бота"""
     try:
-        # Инициализация бота с PicklePersistence
-        # persistence = PicklePersistence(filepath="bot_persistence.pkl")
         application = ApplicationBuilder().token(TOKEN).build()
         handlers = BotHandlers()
         
@@ -1133,7 +1129,7 @@ def main():
         # Регистрация обработчика callback запросов
         application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
         
-        # Регистрация обработчика регистрации (ПЕРЕД MessageHandler для товаров)
+        # Регистрация обработчика регистрации
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", handlers.start)],
             states={
@@ -1146,10 +1142,10 @@ def main():
         )
         application.add_handler(conv_handler)
         
-        # Регистрация обработчика сообщений с товарами (ПОСЛЕ ConversationHandler)
+        # Регистрация обработчика сообщений с товарами
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND & 
-            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel)'),
+            ~filters.Regex(r'(?i)^(регистрация|организация|контакт|start|cancel|ООО|ИП)'),
             handlers.handle_product_message
         ))
         
