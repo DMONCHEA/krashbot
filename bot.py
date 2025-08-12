@@ -513,7 +513,7 @@ class BotHandlers:
             ],
             [
                 InlineKeyboardButton("➕ Добавить еще", switch_inline_query_current_chat=""),
-                InlineKeyboardButton("👨‍💼 Менеджер", url="https://t.me/Krash_order_Bot")
+                InlineKeyboardButton("👨‍💼 Менеджер", url="https://t.me/kras_yulya")
             ]
         ])
         
